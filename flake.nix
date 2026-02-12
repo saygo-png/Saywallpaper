@@ -1,7 +1,8 @@
 {
   inputs = {
     treefmt-nix.url = "github:numtide/treefmt-nix";
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     niceHaskell = {
       url = "github:saygo-png/nice-nixpkgs-haskell";
       inputs = {
@@ -42,7 +43,7 @@
     devShells = eachSystem (_system: pkgs: {
       default = pkgs.mkShell {
         packages = let
-          ghcPackages = pkgs.haskell.packages.ghc912;
+          # ghcPackages = pkgs.haskell.packages.ghc984;
         in [
           pkgs.pkg-config
           pkgs.libsodium
@@ -50,10 +51,19 @@
           pkgs.glew
           pkgs.SDL2
           pkgs.zlib
+          pkgs.libGL
+          pkgs.libGLU
           pkgs.xorg.libX11
+          pkgs.stdenv.cc.cc.lib
+          pkgs.stdenv.cc
 
-          ghcPackages.ghc
-          ghcPackages.haskell-language-server
+          # ghcPackages.cabal-install
+          # ghcPackages.ghc
+          # ghcPackages.haskell-language-server
+
+          pkgs.cabal-install
+          pkgs.ghc
+          pkgs.haskell-language-server
         ];
         shellHook = ''
           export CABAL_DIR="$XDG_CONFIG_HOME/cabal"
