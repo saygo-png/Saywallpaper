@@ -43,7 +43,7 @@
     devShells = eachSystem (_system: pkgs: {
       default = pkgs.mkShell {
         packages = let
-          # ghcPackages = pkgs.haskell.packages.ghc984;
+          ghcPackages = pkgs.haskell.packages.ghc912;
         in [
           pkgs.pkg-config
           pkgs.libsodium
@@ -57,13 +57,13 @@
           pkgs.stdenv.cc.cc.lib
           pkgs.stdenv.cc
 
-          # ghcPackages.cabal-install
-          # ghcPackages.ghc
-          # ghcPackages.haskell-language-server
+          ghcPackages.cabal-install
+          ghcPackages.ghc
+          ghcPackages.haskell-language-server
 
-          pkgs.cabal-install
-          pkgs.ghc
-          pkgs.haskell-language-server
+          # pkgs.cabal-install
+          # pkgs.ghc
+          # pkgs.haskell-language-server
         ];
         shellHook = ''
           export CABAL_DIR="$XDG_CONFIG_HOME/cabal"
