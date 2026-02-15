@@ -5,87 +5,38 @@ import Data.Binary hiding (get, put)
 import Data.Binary qualified as Bin
 import Data.Binary.Get
 import Data.Binary.Put
-import Data.Bits
 import Data.ByteString.Lazy hiding (map)
 import Data.ByteString.Lazy.Internal
 import Data.Int
+import Events
+import Headers
 import Network.Socket
 import Network.Socket.ByteString.Lazy
-import Relude hiding (isPrefixOf, ByteString, get, put, replicate)
+import Relude hiding (ByteString, get, isPrefixOf, length, put, replicate)
 import System.Environment (getEnv)
 import System.Posix.IO
 import System.Posix.SharedMem
 import Text.Printf
+import Utils
 
-padLen :: Word32 -> Int64
-padLen l = (.&.) (fromIntegral l + 3) (-4)
-
-data Header = Header
-  { objectID :: Word32
-  , opCode :: Word16
-  , size :: Word16
-  }
-
--- The byteorder is based on the host system, so this doesn't adhere to the protocol
--- as little endian is used no matter what. The program will only work on x86/x64 systems.
-newtype LeWord32 = LeWord32 Word32
-  deriving newtype (Num, PrintfArg, Show, Eq, Ord)
-
-instance Binary LeWord32 where
-  put :: LeWord32 -> Put
-  put = putWord32le . coerce
-  get :: Get LeWord32
-  get = LeWord32 <$> getWord32le
-
-instance Binary Header where
-  put :: Header -> Put
-  put header = do
-    putWord32le header.objectID
-    putWord16le header.opCode
-    putWord16le header.size
-  get :: Get Header
-  get = Header <$> getWord32le <*> getWord16le <*> getWord16le
-
-instance ToString Header where
-  toString :: Header -> String
-  toString (Header oi op sz) =
-    printf "-- wl_header: objectID=%i opCode=%i size=%i" oi op sz
-
-data EventGlobal = EventGlobal
-  { name :: Word32
-  , interface :: ByteString
-  , version :: Word32
-  }
-
-instance Binary EventGlobal where
-  put :: EventGlobal -> Put
-  put eventGlobal = do
-    Bin.put eventGlobal.name
-    Bin.put eventGlobal.interface
-    Bin.put eventGlobal.version
-  get :: Get EventGlobal
-  get = do
-    name <- getWord32le
-    interface_len <- getWord32le
-    interface <- getLazyByteString $ padLen interface_len
-    let version = getWord32le
-    EventGlobal name interface <$> version
-
-newtype DebugEventGlobal = DebugEventGlobal (Header, EventGlobal)
-
-instance ToString DebugEventGlobal where
-  toString :: DebugEventGlobal -> String
-  toString (DebugEventGlobal (h, e)) =
-    printf "<- wl_registry@%i.global: name=%i interface=\"%s\" version=%i" h.objectID e.name (unpackChars e.interface) e.version
-
-parseMessage :: (Binary a) => Get [(Header, a)]
-parseMessage = do
+parseData :: (Binary a) => Get [(Header, a)]
+parseData = do
   isEmpty >>= \case
     True -> return []
     False -> do
       message <- Bin.get
-      messages <- parseMessage
+      messages <- parseData
       return (message : messages)
+
+parseHeaders :: Get [Header]
+parseHeaders = do
+  isEmpty >>= \case
+    True -> return []
+    False -> do
+      header <- Bin.get
+      skip (fromIntegral header.size - 8)
+      rest <- parseHeaders
+      return (header : rest)
 
 wlDisplayConnect :: IO Socket
 wlDisplayConnect = do
@@ -118,7 +69,7 @@ nextID counter = do
 wlRegistryBind :: Socket -> LeWord32 -> Word32 -> ByteString -> Word32 -> LeWord32 -> IO ()
 wlRegistryBind sock registryID globalName interfaceName interfaceVersion newObjectID = do
   let interfaceStr = interfaceName <> "\0" -- Null-terminated string
-  let interfaceLen = fromIntegral $ Data.ByteString.Lazy.length interfaceStr
+  let interfaceLen = fromIntegral $ length interfaceStr
   let paddedLen = padLen interfaceLen
   let paddingBytes = paddedLen - fromIntegral interfaceLen
 
@@ -152,9 +103,19 @@ wlRegistryBind sock registryID globalName interfaceName interfaceVersion newObje
       newObjectID
 
 findInterface :: [(Header, EventGlobal)] -> ByteString -> Maybe EventGlobal
-findInterface messages targetInterface = 
+findInterface messages targetInterface =
   let target = targetInterface <> "\0"
-  in Relude.find (\(_, e) -> target `isPrefixOf` e.interface) messages >>= Just . snd
+   in Relude.find (\(_, e) -> target `isPrefixOf` e.interface) messages >>= Just . snd
+
+eventLoop :: Socket -> IO ()
+eventLoop sock = do
+  socketData <- receiveSocketData sock
+  unless (Data.ByteString.Lazy.null socketData) $ do
+    putStrLn $ "Received " <> show (length socketData) <> " bytes"
+    print socketData
+    let headers = runGet parseHeaders socketData
+    mapM_ (putStrLn . toString) headers
+    eventLoop sock
 
 main :: IO ()
 main = do
@@ -164,7 +125,7 @@ main = do
   let wlRegistryBind' = wlRegistryBind wl_display wl_registry
 
   socketData <- receiveSocketData wl_display
-  let messages = runGet (parseMessage :: Get [(Header, EventGlobal)]) socketData
+  let messages = runGet (parseData :: Get [(Header, EventGlobal)]) socketData
   mapM_ (putStrLn . toString . DebugEventGlobal) messages
 
   let colorChannels :: Word32 = 4
@@ -199,4 +160,6 @@ main = do
       objID <- nextID counter
       wlRegistryBind' e.name "wl_compositor" e.version objID
 
-  close wl_display
+  -- Read responses from bind operations
+  putStrLn "\n--- Reading bind responses ---"
+  finally (eventLoop wl_display) (close wl_display)
