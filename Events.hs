@@ -7,9 +7,10 @@ import Data.Binary.Put
 import Data.ByteString.Lazy hiding (map)
 import Data.ByteString.Lazy.Internal
 import Headers
-import Utils
 import Relude hiding (ByteString, get, isPrefixOf, length, put, replicate)
 import Text.Printf
+import Utils
+
 -- import Text.Printf
 
 data EventGlobal = EventGlobal
@@ -91,3 +92,54 @@ data WaylandEvent
   | EvDisplayDeleteId Header EventDisplayDeleteId
   | EvXdgWmBasePing Header EventXdgWmBasePing
   | EvUnknown Header
+
+-- Format names for wl_shm
+formatName :: Word32 -> String
+formatName 0 = "ARGB8888"
+formatName 1 = "XRGB8888"
+formatName n = "format_" <> show n
+
+-- Display event
+displayEvent :: WaylandEvent -> IO ()
+displayEvent (EvGlobal h e) =
+  putStrLn
+    $ printf
+      "<- wl_registry@%i.global: name=%i interface=\"%s\" version=%i"
+      h.objectID
+      e.name
+      (unpackChars e.interface)
+      e.version
+displayEvent (EvShmFormat h e) =
+  putStrLn
+    $ printf
+      "<- wl_shm@%i.format: format=%s (%i)"
+      h.objectID
+      (formatName e.format)
+      e.format
+displayEvent (EvDisplayError h e) =
+  putStrLn
+    $ printf
+      "<- wl_display@%i.error: object_id=%i code=%i message=\"%s\""
+      h.objectID
+      e.errorObjectId
+      e.errorCode
+      (unpackChars e.errorMessage)
+displayEvent (EvDisplayDeleteId h e) =
+  putStrLn
+    $ printf
+      "<- wl_display@%i.delete_id: id=%i"
+      h.objectID
+      e.deletedId
+displayEvent (EvXdgWmBasePing h e) =
+  putStrLn
+    $ printf
+      "<- xdg_wm_base@%i.ping: serial=%i"
+      h.objectID
+      e.serial
+displayEvent (EvUnknown h) =
+  putStrLn
+    $ printf
+      "<- unknown event: objectID=%i opCode=%i size=%i"
+      h.objectID
+      h.opCode
+      h.size
