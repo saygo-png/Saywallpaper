@@ -40,6 +40,7 @@ putWlArray bs = do
   putLazyByteString bs
 
 -- Generic little-endian Binary deriving
+type GBinaryLE :: forall {k}. (k -> Type) -> Constraint
 class GBinaryLE f where
   ggetLE :: Get (f a)
   gputLE :: f a -> Put
@@ -70,6 +71,8 @@ instance GBinaryLE (K1 i ByteString) where
   gputLE (K1 x) = putWlString x
 
 -- Newtype wrapper for deriving via
+type role LittleEndian representational
+
 newtype LittleEndian a = LittleEndian a
 
 instance (Generic a, GBinaryLE (Rep a)) => Binary (LittleEndian a) where
@@ -87,7 +90,7 @@ data EventGlobal = EventGlobal
   , interface :: ByteString
   , version :: Word32
   }
-  deriving stock (Generic, Show, Typeable)
+  deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventGlobal)
 
 instance WaylandEventType EventGlobal where
@@ -101,7 +104,7 @@ instance WaylandEventType EventGlobal where
       e.version
 
 newtype EventShmFormat = EventShmFormat {format :: Word32}
-  deriving stock (Generic, Show, Typeable)
+  deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventShmFormat)
 
 instance WaylandEventType EventShmFormat where
@@ -118,7 +121,7 @@ data EventDisplayError = EventDisplayError
   , errorCode :: Word32
   , errorMessage :: ByteString
   }
-  deriving stock (Generic, Show, Typeable)
+  deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventDisplayError)
 
 instance WaylandEventType EventDisplayError where
@@ -132,7 +135,7 @@ instance WaylandEventType EventDisplayError where
       (unpackChars e.errorMessage)
 
 newtype EventDisplayDeleteId = EventDisplayDeleteId {deletedId :: Word32}
-  deriving stock (Generic, Show, Typeable)
+  deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventDisplayDeleteId)
 
 instance WaylandEventType EventDisplayDeleteId where
@@ -141,7 +144,7 @@ instance WaylandEventType EventDisplayDeleteId where
     printf "wl_display@%i.delete_id: id=%i" objId e.deletedId
 
 newtype EventXdgWmBasePing = EventXdgWmBasePing {serial :: Word32}
-  deriving stock (Generic, Show, Typeable)
+  deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventXdgWmBasePing)
 
 instance WaylandEventType EventXdgWmBasePing where
@@ -150,7 +153,7 @@ instance WaylandEventType EventXdgWmBasePing where
     printf "xdg_wm_base@%i.ping: serial=%i" objId e.serial
 
 newtype EventXdgSurfaceConfigure = EventXdgSurfaceConfigure {serial :: Word32}
-  deriving stock (Generic, Show, Typeable)
+  deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventXdgSurfaceConfigure)
 
 instance WaylandEventType EventXdgSurfaceConfigure where
@@ -163,7 +166,7 @@ data EventXdgToplevelConfigure = EventXdgToplevelConfigure
   , height :: Int32
   , states :: ByteString
   }
-  deriving stock (Generic, Show, Typeable)
+  deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventXdgToplevelConfigure)
 
 instance WaylandEventType EventXdgToplevelConfigure where
@@ -177,7 +180,7 @@ instance WaylandEventType EventXdgToplevelConfigure where
       (length e.states)
 
 data EventXdgToplevelClose = EventXdgToplevelClose
-  deriving stock (Generic, Show, Typeable)
+  deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventXdgToplevelClose)
 
 instance WaylandEventType EventXdgToplevelClose where
@@ -188,7 +191,7 @@ data EventXdgToplevelConfigureBounds = EventXdgToplevelConfigureBounds
   { boundsWidth :: Int32
   , boundsHeight :: Int32
   }
-  deriving stock (Generic, Show, Typeable)
+  deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventXdgToplevelConfigureBounds)
 
 instance WaylandEventType EventXdgToplevelConfigureBounds where
@@ -202,7 +205,7 @@ instance WaylandEventType EventXdgToplevelConfigureBounds where
 
 newtype EventXdgToplevelWmCapabilities = EventXdgToplevelWmCapabilities
   {capabilities :: ByteString}
-  deriving stock (Generic, Show, Typeable)
+  deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventXdgToplevelWmCapabilities)
 
 instance WaylandEventType EventXdgToplevelWmCapabilities where
