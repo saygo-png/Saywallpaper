@@ -1,5 +1,9 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Events (module Events) where
 
@@ -8,6 +12,7 @@ import Data.Binary.Get
 import Data.Binary.Put
 import Data.ByteString.Lazy hiding (map)
 import Data.ByteString.Lazy.Internal
+import GHC.Generics
 import Headers
 import Relude hiding (ByteString, get, isPrefixOf, length, put, replicate)
 import Text.Printf
@@ -34,22 +39,56 @@ putWlArray bs = do
   putWord32le (fromIntegral $ length bs)
   putLazyByteString bs
 
+-- Generic little-endian Binary deriving
+class GBinaryLE f where
+  ggetLE :: Get (f a)
+  gputLE :: f a -> Put
+
+instance GBinaryLE U1 where
+  ggetLE = return U1
+  gputLE U1 = return ()
+
+instance (GBinaryLE a, GBinaryLE b) => GBinaryLE (a :*: b) where
+  ggetLE = (:*:) <$> ggetLE <*> ggetLE
+  gputLE (a :*: b) = gputLE a *> gputLE b
+
+instance (GBinaryLE a) => GBinaryLE (M1 i c a) where
+  ggetLE = M1 <$> ggetLE
+  gputLE (M1 x) = gputLE x
+
+-- Instances for primitive types
+instance GBinaryLE (K1 i Word32) where
+  ggetLE = K1 <$> getWord32le
+  gputLE (K1 x) = putWord32le x
+
+instance GBinaryLE (K1 i Int32) where
+  ggetLE = K1 <$> getInt32le
+  gputLE (K1 x) = putInt32le x
+
+instance GBinaryLE (K1 i ByteString) where
+  ggetLE = K1 <$> getWlString -- Assumes all ByteStrings are Wayland strings
+  gputLE (K1 x) = putWlString x
+
+-- Newtype wrapper for deriving via
+newtype LittleEndian a = LittleEndian a
+
+instance (Generic a, GBinaryLE (Rep a)) => Binary (LittleEndian a) where
+  get = LittleEndian . to <$> ggetLE
+  put (LittleEndian x) = gputLE (from x)
+
 -- Type class for events that can describe themselves
 class WaylandEventType a where
   eventName :: a -> String
-  formatEvent :: Word32 -> a -> String -- objectID -> event -> formatted string
+  formatEvent :: Word32 -> a -> String
 
--- Simple wrapper for events with auto-derived instances
+-- Now we can derive Binary automatically!
 data EventGlobal = EventGlobal
   { name :: Word32
   , interface :: ByteString
   , version :: Word32
   }
-  deriving stock (Generic, Show)
-
-instance Binary EventGlobal where
-  get = EventGlobal <$> getWord32le <*> getWlString <*> getWord32le
-  put e = putWord32le e.name *> putWlString e.interface *> putWord32le e.version
+  deriving stock (Generic, Show, Typeable)
+  deriving (Binary) via (LittleEndian EventGlobal)
 
 instance WaylandEventType EventGlobal where
   eventName _ = "global"
@@ -62,8 +101,8 @@ instance WaylandEventType EventGlobal where
       e.version
 
 newtype EventShmFormat = EventShmFormat {format :: Word32}
-  deriving stock (Generic, Show)
-  deriving newtype (Binary)
+  deriving stock (Generic, Show, Typeable)
+  deriving (Binary) via (LittleEndian EventShmFormat)
 
 instance WaylandEventType EventShmFormat where
   eventName _ = "format"
@@ -79,11 +118,8 @@ data EventDisplayError = EventDisplayError
   , errorCode :: Word32
   , errorMessage :: ByteString
   }
-  deriving stock (Generic, Show)
-
-instance Binary EventDisplayError where
-  get = EventDisplayError <$> getWord32le <*> getWord32le <*> getWlString
-  put e = putWord32le e.errorObjectId *> putWord32le e.errorCode *> putWlString e.errorMessage
+  deriving stock (Generic, Show, Typeable)
+  deriving (Binary) via (LittleEndian EventDisplayError)
 
 instance WaylandEventType EventDisplayError where
   eventName _ = "error"
@@ -96,8 +132,8 @@ instance WaylandEventType EventDisplayError where
       (unpackChars e.errorMessage)
 
 newtype EventDisplayDeleteId = EventDisplayDeleteId {deletedId :: Word32}
-  deriving stock (Generic, Show)
-  deriving newtype (Binary)
+  deriving stock (Generic, Show, Typeable)
+  deriving (Binary) via (LittleEndian EventDisplayDeleteId)
 
 instance WaylandEventType EventDisplayDeleteId where
   eventName _ = "delete_id"
@@ -105,8 +141,8 @@ instance WaylandEventType EventDisplayDeleteId where
     printf "wl_display@%i.delete_id: id=%i" objId e.deletedId
 
 newtype EventXdgWmBasePing = EventXdgWmBasePing {serial :: Word32}
-  deriving stock (Generic, Show)
-  deriving newtype (Binary)
+  deriving stock (Generic, Show, Typeable)
+  deriving (Binary) via (LittleEndian EventXdgWmBasePing)
 
 instance WaylandEventType EventXdgWmBasePing where
   eventName _ = "ping"
@@ -114,8 +150,8 @@ instance WaylandEventType EventXdgWmBasePing where
     printf "xdg_wm_base@%i.ping: serial=%i" objId e.serial
 
 newtype EventXdgSurfaceConfigure = EventXdgSurfaceConfigure {serial :: Word32}
-  deriving stock (Generic, Show)
-  deriving newtype (Binary)
+  deriving stock (Generic, Show, Typeable)
+  deriving (Binary) via (LittleEndian EventXdgSurfaceConfigure)
 
 instance WaylandEventType EventXdgSurfaceConfigure where
   eventName _ = "configure"
@@ -127,11 +163,8 @@ data EventXdgToplevelConfigure = EventXdgToplevelConfigure
   , height :: Int32
   , states :: ByteString
   }
-  deriving stock (Generic, Show)
-
-instance Binary EventXdgToplevelConfigure where
-  get = EventXdgToplevelConfigure <$> getInt32le <*> getInt32le <*> getWlArray
-  put e = putInt32le e.width *> putInt32le e.height *> putWlArray e.states
+  deriving stock (Generic, Show, Typeable)
+  deriving (Binary) via (LittleEndian EventXdgToplevelConfigure)
 
 instance WaylandEventType EventXdgToplevelConfigure where
   eventName _ = "configure"
@@ -144,9 +177,8 @@ instance WaylandEventType EventXdgToplevelConfigure where
       (length e.states)
 
 data EventXdgToplevelClose = EventXdgToplevelClose
-  deriving stock (Generic, Show)
-
-instance Binary EventXdgToplevelClose
+  deriving stock (Generic, Show, Typeable)
+  deriving (Binary) via (LittleEndian EventXdgToplevelClose)
 
 instance WaylandEventType EventXdgToplevelClose where
   eventName _ = "close"
@@ -156,9 +188,8 @@ data EventXdgToplevelConfigureBounds = EventXdgToplevelConfigureBounds
   { boundsWidth :: Int32
   , boundsHeight :: Int32
   }
-  deriving stock (Generic, Show)
-
-instance Binary EventXdgToplevelConfigureBounds
+  deriving stock (Generic, Show, Typeable)
+  deriving (Binary) via (LittleEndian EventXdgToplevelConfigureBounds)
 
 instance WaylandEventType EventXdgToplevelConfigureBounds where
   eventName _ = "configure_bounds"
@@ -171,11 +202,8 @@ instance WaylandEventType EventXdgToplevelConfigureBounds where
 
 newtype EventXdgToplevelWmCapabilities = EventXdgToplevelWmCapabilities
   {capabilities :: ByteString}
-  deriving stock (Generic, Show)
-
-instance Binary EventXdgToplevelWmCapabilities where
-  get = EventXdgToplevelWmCapabilities <$> getWlArray
-  put e = putWlArray e.capabilities
+  deriving stock (Generic, Show, Typeable)
+  deriving (Binary) via (LittleEndian EventXdgToplevelWmCapabilities)
 
 instance WaylandEventType EventXdgToplevelWmCapabilities where
   eventName _ = "wm_capabilities"
