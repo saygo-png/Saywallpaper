@@ -8,20 +8,24 @@ import Data.Binary hiding (get, put)
 import Data.Binary qualified as Bin
 import Data.Binary.Get
 import Data.Binary.Put
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy
-import Data.ByteString.Lazy qualified as BS
-import Data.ByteString.Lazy.Internal qualified as BS
+import Data.ByteString.Lazy qualified as BSL
+import Data.ByteString.Lazy.Internal qualified as BSL
 import Data.Int
 import Data.Maybe (fromJust)
 import Data.Typeable
 import Events
 import Headers
 import Network.Socket
+import Network.Socket.ByteString (sendManyWithFds)
 import Network.Socket.ByteString.Lazy
 import Relude hiding (ByteString, get, isPrefixOf, length, put, replicate)
 import System.Environment (getEnv)
+import System.Posix (setFdSize)
 import System.Posix.IO
 import System.Posix.SharedMem
+import System.Posix.Types
 import Text.Printf
 import Utils
 
@@ -120,7 +124,7 @@ wlRegistryBind sock registryID trackerRef updateFn globalName interfaceName inte
       " --> wl_registry@%i.bind: name=%i interface=\"%s\" version=%i id=%i"
       registryID
       globalName
-      (BS.unpackChars interfaceName)
+      (BSL.unpackChars interfaceName)
       interfaceVersion
       newObjectID
   modifyIORef' trackerRef $ \t -> updateFn t (Just newObjectID)
@@ -148,6 +152,22 @@ wlSurfaceCommit sock trackerRef = do
 
   putStrLn $ printf " --> wl_surface@%i.commit: commit request" wl_surfaceID
 
+wlSurfaceAttach :: Socket -> IORef ObjectTracker -> IO ()
+wlSurfaceAttach sock trackerRef = do
+  tracker <- readIORef trackerRef
+  let wl_surfaceID = fromJust tracker.wl_surfaceID
+  let wl_bufferID = fromJust tracker.wl_bufferID
+
+  let messageBody = runPut $ do
+        -- putWord32le wl_bufferID
+        putWord32le wl_bufferID
+        -- x y arguments have to be set to 0
+        putInt32le 0
+        putInt32le 0
+  sendAll sock $ mkMessage wl_surfaceID 1 messageBody
+
+  putStrLn $ printf " --> wl_surface@%i.attach: bufferId=%i x=%i y=%i" wl_surfaceID wl_bufferID 0 0
+
 xdgWmBaseCreateSurface :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> IO Word32
 xdgWmBaseCreateSurface sock trackerRef updateFn newObjectID = do
   tracker <- readIORef trackerRef
@@ -163,6 +183,31 @@ xdgWmBaseCreateSurface sock trackerRef updateFn newObjectID = do
   modifyIORef' trackerRef $ \t -> updateFn t (Just newObjectID)
   pure newObjectID
 
+xdgSurfaceAckConfigure :: Socket -> IORef ObjectTracker -> IO ()
+xdgSurfaceAckConfigure sock trackerRef = do
+  tracker <- readIORef trackerRef
+  let xdg_surfaceID = fromJust tracker.xdg_surfaceID
+  let xdgSurfaceSerial = fromJust tracker.xdg_surfaceSerial
+
+  let messageBody = runPut $ putWord32le xdgSurfaceSerial
+  sendAll sock $ mkMessage xdg_surfaceID 4 messageBody
+
+  putStrLn $ printf " --> xdg_surface@%i.ack_configure: serial %i" xdg_surfaceID xdgSurfaceSerial
+
+wlShmCreatePool :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Fd -> Word32 -> Word32 -> IO Word32
+wlShmCreatePool sock trackerRef updateFn fileDescriptor size newObjectID = do
+  tracker <- readIORef trackerRef
+  let wl_shmID = fromJust tracker.wl_shmID
+  let messageBody = runPut $ do
+        putWord32le newObjectID
+        putWord32le size
+  let msg = BS.toStrict $ mkMessage wl_shmID 0 messageBody
+  sendManyWithFds sock [msg] [fileDescriptor]
+
+  putStrLn $ printf " --> wl_shm@%i.create_pool: newID=%i fd=%s size=%i" wl_shmID newObjectID (show fileDescriptor :: Text) size
+  modifyIORef' trackerRef $ \t -> updateFn t (Just newObjectID)
+  pure newObjectID
+
 xdgSurfaceGetTopLevel :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> IO Word32
 xdgSurfaceGetTopLevel sock trackerRef updateFn newObjectID = do
   tracker <- readIORef trackerRef
@@ -175,6 +220,24 @@ xdgSurfaceGetTopLevel sock trackerRef updateFn newObjectID = do
   modifyIORef' trackerRef $ \t -> updateFn t (Just newObjectID)
   pure newObjectID
 
+wlShmPoolCreateBuffer :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> Word32 -> Word32 -> Word32 -> Word32 -> Word32 -> IO Word32
+wlShmPoolCreateBuffer sock trackerRef updateFn offset width height stride format newObjectID = do
+  tracker <- readIORef trackerRef
+  let wl_shm_poolID = fromJust tracker.wl_shm_poolID
+
+  let messageBody = runPut $ do
+        putWord32le newObjectID
+        putWord32le offset
+        putWord32le width
+        putWord32le height
+        putWord32le stride
+        putWord32le format
+  sendAll sock $ mkMessage wl_shm_poolID 0 messageBody
+
+  putStrLn $ printf " --> wl_shm_pool@%i.create_buffer: newID=%i" wl_shm_poolID newObjectID
+  modifyIORef' trackerRef $ \t -> updateFn t (Just newObjectID)
+  pure newObjectID
+
 findInterface :: [(Header, EventGlobal)] -> ByteString -> Maybe EventGlobal
 findInterface messages targetInterface =
   let target = targetInterface <> "\0"
@@ -183,7 +246,7 @@ findInterface messages targetInterface =
 bindToInterface :: [(Header, EventGlobal)] -> ByteString -> IORef Word32 -> (Word32 -> ByteString -> Word32 -> Word32 -> IO Word32) -> IO (Maybe Word32)
 bindToInterface globals targetInterface counter wlRegistryBind' =
   case findInterface globals targetInterface of
-    Nothing -> putStrLn ("ERROR: " <> BS.unpackChars targetInterface <> " not found") >> pure Nothing
+    Nothing -> putStrLn ("ERROR: " <> BSL.unpackChars targetInterface <> " not found") >> pure Nothing
     Just e -> do
       objID <- nextID counter
       Just <$> wlRegistryBind' e.name targetInterface e.version objID
@@ -193,20 +256,19 @@ eventLoop wl_display refTracker = do
   -- putStrLn "Waiting for events..."
   msg <- receiveSocketData wl_display
   tracker <- readIORef refTracker
-  unless (BS.null msg) $ do
+  unless (BSL.null msg) $ do
     let events = runGet (parseEvents tracker) msg
     forM_ events $ \event -> do
       displayEvent event
       -- Handle events that need responses
-      handleEventResponse wl_display event
+      handleEventResponse wl_display refTracker event
   eventLoop wl_display refTracker
 
-handleEventResponse :: Socket -> WaylandEvent -> IO ()
-handleEventResponse wl_display (Event h e) =
-  case cast e of
-    Just (ping :: EventXdgWmBasePing) -> xdgWmBasePong wl_display h.objectID ping.serial
-    Nothing -> return ()
-handleEventResponse _ _ = return ()
+handleEventResponse :: Socket -> IORef ObjectTracker -> WaylandEvent -> IO ()
+handleEventResponse wl_display refTracker (Event h e) = do
+  whenJust (cast e) $ \(ping :: EventXdgWmBasePing) -> xdgWmBasePong wl_display h.objectID ping.serial
+  whenJust (cast e) $ \(configure :: EventXdgSurfaceConfigure) -> modifyIORef' refTracker (\t -> t{xdg_surfaceSerial = Just configure.serial})
+handleEventResponse _ _ _ = return ()
 
 data ObjectTracker = ObjectTracker
   { registryID :: Maybe Word32
@@ -216,6 +278,9 @@ data ObjectTracker = ObjectTracker
   , wl_surfaceID :: Maybe Word32
   , xdg_surfaceID :: Maybe Word32
   , xdg_toplevelID :: Maybe Word32
+  , xdg_surfaceSerial :: Maybe Word32
+  , wl_shm_poolID :: Maybe Word32
+  , wl_bufferID :: Maybe Word32
   }
 
 main :: IO ()
@@ -223,7 +288,7 @@ main = do
   counter <- newIORef 2 -- Start from 2 as ID 1 is always wl_display
   wl_display <- wlDisplayConnect
   wl_registry <- wlDisplayGetRegistry wl_display =<< nextID counter
-  trackerRef <- newIORef $ ObjectTracker (Just wl_registry) Nothing Nothing Nothing Nothing Nothing Nothing
+  trackerRef <- newIORef $ ObjectTracker (Just wl_registry) Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
 
   socketData <- receiveSocketData wl_display
   tracker <- readIORef trackerRef
@@ -242,14 +307,9 @@ main = do
   let bufferWidth :: Word32 = 117
   let bufferHeight :: Word32 = 150
   let stride :: Word32 = 117 * colorChannels
+  let colorFormat :: Word32 = 1 -- XRGB8888
   let sharedPoolSize :: Word32 = bufferWidth * bufferHeight * colorChannels
   let poolName :: String = "saybar-shared-pool"
-
-  void
-    $ bracket
-      (shmOpen poolName (ShmOpenFlags True True True True) 0600)
-      (\fileDescriptor -> closeFd fileDescriptor >> shmUnlink poolName)
-      (\fileDescriptor -> pure ())
 
   void
     . forkIO
@@ -264,13 +324,32 @@ main = do
   -- Bind to the required interfaces
   putStrLn "\n--- Binding to interfaces ---"
   let wlRegistryBind' = wlRegistryBind wl_display wl_registry trackerRef
-  wl_shm <- bindToInterface globals "wl_shm" counter (wlRegistryBind' (\t objectID -> t{wl_shmID = objectID}))
-  xdg_wm_base <- bindToInterface globals "xdg_wm_base" counter (wlRegistryBind' (\t objectID -> t{xdg_wm_baseID = objectID}))
-  wl_compositor <- bindToInterface globals "wl_compositor" counter (wlRegistryBind' (\t objectID -> t{wl_compositorID = objectID}))
+  _wl_shm <- bindToInterface globals "wl_shm" counter (wlRegistryBind' (\t objectID -> t{wl_shmID = objectID}))
+  _xdg_wm_base <- bindToInterface globals "xdg_wm_base" counter (wlRegistryBind' (\t objectID -> t{xdg_wm_baseID = objectID}))
+  _wl_compositor <- bindToInterface globals "wl_compositor" counter (wlRegistryBind' (\t objectID -> t{wl_compositorID = objectID}))
 
-  wl_surface <- wlCompositorCreateSurface wl_display trackerRef (\t objectID -> t{wl_surfaceID = objectID}) =<< nextID counter
-  xdg_surface <- xdgWmBaseCreateSurface wl_display trackerRef (\t objectID -> t{xdg_surfaceID = objectID}) =<< nextID counter
-  xdg_toplevel <- xdgSurfaceGetTopLevel wl_display trackerRef (\t objectID -> t{xdg_toplevelID = objectID}) =<< nextID counter
+  _wl_surface <- wlCompositorCreateSurface wl_display trackerRef (\t objectID -> t{wl_surfaceID = objectID}) =<< nextID counter
+  _xdg_surface <- xdgWmBaseCreateSurface wl_display trackerRef (\t objectID -> t{xdg_surfaceID = objectID}) =<< nextID counter
+  _xdg_toplevel <- xdgSurfaceGetTopLevel wl_display trackerRef (\t objectID -> t{xdg_toplevelID = objectID}) =<< nextID counter
   void $ wlSurfaceCommit wl_display trackerRef
+  threadDelay 100000 -- Wait for response from commit
+  void $ xdgSurfaceAckConfigure wl_display trackerRef
 
-  threadDelay maxBound
+  void
+    $ bracket
+      (shmOpen poolName (ShmOpenFlags True True True True) 0600)
+      -- (\fd -> closeFd fd >> shmUnlink poolName)
+      (\fd -> shmUnlink poolName)
+      ( \fileDescriptor -> do
+          setFdSize fileDescriptor (fromIntegral sharedPoolSize)
+          _wl_shm_pool <- wlShmCreatePool wl_display trackerRef (\t objectID -> t{wl_shm_poolID = objectID}) fileDescriptor sharedPoolSize =<< nextID counter
+          _wl_buffer <- wlShmPoolCreateBuffer wl_display trackerRef (\t objectID -> t{wl_bufferID = objectID}) 0 bufferWidth bufferHeight stride colorFormat =<< nextID counter
+
+          file_handle <- fdToHandle fileDescriptor
+          let pixelData = runPut $ replicateM_ (fromIntegral $ bufferWidth * bufferHeight) $ putWord32le 0x00FF0000
+          hPut file_handle pixelData
+
+          void $ wlSurfaceAttach wl_display trackerRef
+          void $ wlSurfaceCommit wl_display trackerRef
+          threadDelay maxBound
+      )
