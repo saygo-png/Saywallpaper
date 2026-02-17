@@ -1,6 +1,5 @@
 {
   niceHaskell,
-  pkgs,
   ...
 }:
 niceHaskell.mkPackage {
