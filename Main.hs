@@ -28,7 +28,7 @@ import Utils
 headerSize :: Int64
 headerSize = 8
 
-nextID :: IORef LeWord32 -> IO LeWord32
+nextID :: IORef Word32 -> IO Word32
 nextID counter = do
   current <- readIORef counter
   modifyIORef counter (+ 1)
@@ -77,7 +77,7 @@ parseEvent tracker = do
       | matchEvent' tracker.xdg_toplevelID 3 -> ev (Bin.get @EventXdgToplevelWmCapabilities)
       | otherwise -> skip bodySize $> EvUnknown header
   where
-    matchEvent :: Header -> Maybe LeWord32 -> Word16 -> Bool
+    matchEvent :: Header -> Maybe Word32 -> Word16 -> Bool
     matchEvent header (Just oid) opcode = coerce oid == header.objectID && header.opCode == opcode
     matchEvent _ Nothing _ = False
 
@@ -87,10 +87,10 @@ parseEvents tracker = do
     True -> return []
     False -> (:) <$> parseEvent tracker <*> parseEvents tracker
 
-wlDisplayGetRegistry :: Socket -> LeWord32 -> IO LeWord32
+wlDisplayGetRegistry :: Socket -> Word32 -> IO Word32
 wlDisplayGetRegistry wl_display newObjectID = do
-  let wl_header = encode (Header 1 1 12, newObjectID)
-  sendAll wl_display wl_header
+  let messageBody = runPut $ putWord32le newObjectID
+  sendAll wl_display $ mkMessage 1 1 messageBody
   putStrLn "  --> wl_display@1.get_registry: wl_registry=2"
   return newObjectID
 
@@ -100,7 +100,7 @@ xdgWmBasePong sock xdgWmBaseId serial = do
   sendAll sock $ mkMessage xdgWmBaseId 0 messageBody
   putStrLn $ printf "-> xdg_wm_base@%i.pong: serial=%i" xdgWmBaseId serial
 
-wlRegistryBind :: Socket -> LeWord32 -> IORef ObjectTracker -> (ObjectTracker -> Maybe LeWord32 -> ObjectTracker) -> Word32 -> ByteString -> Word32 -> LeWord32 -> IO LeWord32
+wlRegistryBind :: Socket -> Word32 -> IORef ObjectTracker -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> ByteString -> Word32 -> Word32 -> IO Word32
 wlRegistryBind sock registryID trackerRef updateFn globalName interfaceName interfaceVersion newObjectID = do
   let interfaceStr = interfaceName <> "\0" -- Null-terminated string
   let interfaceLen = fromIntegral $ length interfaceStr
@@ -126,7 +126,7 @@ wlRegistryBind sock registryID trackerRef updateFn globalName interfaceName inte
   modifyIORef' trackerRef $ \t -> updateFn t (Just newObjectID)
   pure newObjectID
 
-wlCompositorCreateSurface :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe LeWord32 -> ObjectTracker) -> LeWord32 -> IO LeWord32
+wlCompositorCreateSurface :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> IO Word32
 wlCompositorCreateSurface sock trackerRef updateFn newObjectID = do
   tracker <- readIORef trackerRef
   let wl_compositorID = fromJust tracker.wl_compositorID
@@ -148,7 +148,7 @@ wlSurfaceCommit sock trackerRef = do
 
   putStrLn $ printf " --> wl_surface@%i.commit: commit request" wl_surfaceID
 
-xdgWmBaseCreateSurface :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe LeWord32 -> ObjectTracker) -> LeWord32 -> IO LeWord32
+xdgWmBaseCreateSurface :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> IO Word32
 xdgWmBaseCreateSurface sock trackerRef updateFn newObjectID = do
   tracker <- readIORef trackerRef
   let xdg_wm_baseID = coerce $ fromJust tracker.xdg_wm_baseID
@@ -163,7 +163,7 @@ xdgWmBaseCreateSurface sock trackerRef updateFn newObjectID = do
   modifyIORef' trackerRef $ \t -> updateFn t (Just newObjectID)
   pure newObjectID
 
-xdgSurfaceGetTopLevel :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe LeWord32 -> ObjectTracker) -> LeWord32 -> IO LeWord32
+xdgSurfaceGetTopLevel :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> IO Word32
 xdgSurfaceGetTopLevel sock trackerRef updateFn newObjectID = do
   tracker <- readIORef trackerRef
   let xdg_surfaceID = coerce $ fromJust tracker.xdg_surfaceID
@@ -181,7 +181,7 @@ findInterface messages targetInterface =
   let target = targetInterface <> "\0"
    in Relude.find (\(_, e) -> target `isPrefixOf` e.interface) messages >>= Just . snd
 
-bindToInterface :: [(Header, EventGlobal)] -> ByteString -> IORef LeWord32 -> (Word32 -> ByteString -> Word32 -> LeWord32 -> IO LeWord32) -> IO (Maybe LeWord32)
+bindToInterface :: [(Header, EventGlobal)] -> ByteString -> IORef Word32 -> (Word32 -> ByteString -> Word32 -> Word32 -> IO Word32) -> IO (Maybe Word32)
 bindToInterface globals targetInterface counter wlRegistryBind' =
   case findInterface globals targetInterface of
     Nothing -> putStrLn ("ERROR: " <> BS.unpackChars targetInterface <> " not found") >> pure Nothing
@@ -191,7 +191,7 @@ bindToInterface globals targetInterface counter wlRegistryBind' =
 
 eventLoop :: Socket -> IORef ObjectTracker -> IO ()
 eventLoop wl_display refTracker = do
-  putStrLn "Waiting for events..."
+  -- putStrLn "Waiting for events..."
   msg <- receiveSocketData wl_display
   tracker <- readIORef refTracker
   unless (BS.null msg) $ do
@@ -210,13 +210,13 @@ handleEventResponse wl_display (Event h e) =
 handleEventResponse _ _ = return ()
 
 data ObjectTracker = ObjectTracker
-  { registryID :: Maybe LeWord32
-  , wl_shmID :: Maybe LeWord32
-  , xdg_wm_baseID :: Maybe LeWord32
-  , wl_compositorID :: Maybe LeWord32
-  , wl_surfaceID :: Maybe LeWord32
-  , xdg_surfaceID :: Maybe LeWord32
-  , xdg_toplevelID :: Maybe LeWord32
+  { registryID :: Maybe Word32
+  , wl_shmID :: Maybe Word32
+  , xdg_wm_baseID :: Maybe Word32
+  , wl_compositorID :: Maybe Word32
+  , wl_surfaceID :: Maybe Word32
+  , xdg_surfaceID :: Maybe Word32
+  , xdg_toplevelID :: Maybe Word32
   }
 
 main :: IO ()

@@ -14,7 +14,7 @@ import Data.ByteString.Lazy hiding (map)
 import Data.ByteString.Lazy.Internal
 import GHC.Generics
 import Headers
-import Relude hiding (ByteString, get, isPrefixOf, length, put, replicate)
+import Relude hiding (ByteString, Word32, put, get, isPrefixOf, length, put, replicate)
 import Text.Printf
 import Utils
 
