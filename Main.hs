@@ -78,7 +78,7 @@ parseEvent tracker = do
       | otherwise -> skip bodySize $> EvUnknown header
   where
     matchEvent :: Header -> Maybe Word32 -> Word16 -> Bool
-    matchEvent header (Just oid) opcode = coerce oid == header.objectID && header.opCode == opcode
+    matchEvent header (Just oid) opcode = oid == header.objectID && header.opCode == opcode
     matchEvent _ Nothing _ = False
 
 parseEvents :: ObjectTracker -> Get [WaylandEvent]
@@ -112,8 +112,8 @@ wlRegistryBind sock registryID trackerRef updateFn globalName interfaceName inte
         putLazyByteString interfaceStr -- interface string
         replicateM_ (fromIntegral paddingBytes) (putWord8 0) -- padding
         putWord32le interfaceVersion -- version
-        putWord32le (coerce newObjectID) -- new_id
-  sendAll sock $ mkMessage (coerce registryID) 0 messageBody
+        putWord32le newObjectID -- new_id
+  sendAll sock $ mkMessage registryID 0 messageBody
 
   putStrLn
     $ printf
@@ -131,8 +131,8 @@ wlCompositorCreateSurface sock trackerRef updateFn newObjectID = do
   tracker <- readIORef trackerRef
   let wl_compositorID = fromJust tracker.wl_compositorID
 
-  let messageBody = runPut $ putWord32le (coerce newObjectID)
-  sendAll sock $ mkMessage (coerce wl_compositorID) 0 messageBody
+  let messageBody = runPut $ putWord32le newObjectID
+  sendAll sock $ mkMessage wl_compositorID 0 messageBody
 
   putStrLn $ printf " --> wl_compositor@%i.create_surface: newID=%i" wl_compositorID newObjectID
   modifyIORef' trackerRef $ \t -> updateFn t (Just newObjectID)
@@ -144,18 +144,18 @@ wlSurfaceCommit sock trackerRef = do
   let wl_surfaceID = fromJust tracker.wl_surfaceID
 
   let messageBody = runPut mempty
-  sendAll sock $ mkMessage (coerce wl_surfaceID) 6 messageBody
+  sendAll sock $ mkMessage wl_surfaceID 6 messageBody
 
   putStrLn $ printf " --> wl_surface@%i.commit: commit request" wl_surfaceID
 
 xdgWmBaseCreateSurface :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> IO Word32
 xdgWmBaseCreateSurface sock trackerRef updateFn newObjectID = do
   tracker <- readIORef trackerRef
-  let xdg_wm_baseID = coerce $ fromJust tracker.xdg_wm_baseID
-  let wl_surfaceID = coerce $ fromJust tracker.wl_surfaceID
+  let xdg_wm_baseID = fromJust tracker.xdg_wm_baseID
+  let wl_surfaceID = fromJust tracker.wl_surfaceID
 
   let messageBody = runPut $ do
-        putWord32le (coerce newObjectID)
+        putWord32le newObjectID
         putWord32le wl_surfaceID
   sendAll sock $ mkMessage xdg_wm_baseID 2 messageBody
 
@@ -166,10 +166,9 @@ xdgWmBaseCreateSurface sock trackerRef updateFn newObjectID = do
 xdgSurfaceGetTopLevel :: Socket -> IORef ObjectTracker -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> IO Word32
 xdgSurfaceGetTopLevel sock trackerRef updateFn newObjectID = do
   tracker <- readIORef trackerRef
-  let xdg_surfaceID = coerce $ fromJust tracker.xdg_surfaceID
+  let xdg_surfaceID = fromJust tracker.xdg_surfaceID
 
-  let messageBody = runPut $ do
-        putWord32le (coerce newObjectID)
+  let messageBody = runPut $ putWord32le newObjectID
   sendAll sock $ mkMessage xdg_surfaceID 1 messageBody
 
   putStrLn $ printf " --> xdg_surface@%i.get_toplevel: newID=%i" xdg_surfaceID newObjectID

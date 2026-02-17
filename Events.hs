@@ -14,7 +14,7 @@ import Data.ByteString.Lazy hiding (map)
 import Data.ByteString.Lazy.Internal
 import GHC.Generics
 import Headers
-import Relude hiding (ByteString, Word32, put, get, isPrefixOf, length, put, replicate)
+import Relude hiding (ByteString, Word32, get, isPrefixOf, put, replicate)
 import Text.Printf
 import Utils
 
@@ -26,17 +26,7 @@ getWlString = do
 
 putWlString :: ByteString -> Put
 putWlString bs = do
-  putWord32le (fromIntegral $ length bs)
-  putLazyByteString bs
-
-getWlArray :: Get ByteString
-getWlArray = do
-  len <- getWord32le
-  getLazyByteString (padLen len)
-
-putWlArray :: ByteString -> Put
-putWlArray bs = do
-  putWord32le (fromIntegral $ length bs)
+  putWord32le (fromIntegral $ Data.ByteString.Lazy.length bs)
   putLazyByteString bs
 
 -- Generic little-endian Binary deriving
@@ -67,8 +57,23 @@ instance GBinaryLE (K1 i Int32) where
   gputLE (K1 x) = putInt32le x
 
 instance GBinaryLE (K1 i ByteString) where
-  ggetLE = K1 <$> getWlString -- Assumes all ByteStrings are Wayland strings
+  ggetLE = K1 <$> getWlString
   gputLE (K1 x) = putWlString x
+
+-- Wayland array type - typed array with length-prefixed wire format
+newtype WlArray a = WlArray [a]
+  deriving stock (Show)
+
+instance GBinaryLE (K1 i (WlArray Word32)) where
+  ggetLE = do
+    len <- getWord32le
+    bytes <- getLazyByteString (padLen $ fromIntegral len)
+    let elems = runGet (replicateM (fromIntegral len `div` 4) getWord32le) bytes
+    return $ K1 (WlArray elems)
+  gputLE (K1 (WlArray xs)) = do
+    let len = fromIntegral (Relude.length xs * 4) :: Word32
+    putWord32le len
+    mapM_ putWord32le xs
 
 -- Newtype wrapper for deriving via
 type role LittleEndian representational
@@ -81,10 +86,8 @@ instance (Generic a, GBinaryLE (Rep a)) => Binary (LittleEndian a) where
 
 -- Type class for events that can describe themselves
 class WaylandEventType a where
-  eventName :: a -> String
   formatEvent :: Word32 -> a -> String
 
--- Now we can derive Binary automatically!
 data EventGlobal = EventGlobal
   { name :: Word32
   , interface :: ByteString
@@ -94,7 +97,6 @@ data EventGlobal = EventGlobal
   deriving (Binary) via (LittleEndian EventGlobal)
 
 instance WaylandEventType EventGlobal where
-  eventName _ = "global"
   formatEvent objId e =
     printf
       "wl_registry@%i.global: name=%i interface=\"%s\" version=%i"
@@ -108,7 +110,6 @@ newtype EventShmFormat = EventShmFormat {format :: Word32}
   deriving (Binary) via (LittleEndian EventShmFormat)
 
 instance WaylandEventType EventShmFormat where
-  eventName _ = "format"
   formatEvent objId e =
     printf
       "wl_shm@%i.format: format=%s (%i)"
@@ -125,7 +126,6 @@ data EventDisplayError = EventDisplayError
   deriving (Binary) via (LittleEndian EventDisplayError)
 
 instance WaylandEventType EventDisplayError where
-  eventName _ = "error"
   formatEvent objId e =
     printf
       "wl_display@%i.error: object_id=%i code=%i message=\"%s\""
@@ -139,7 +139,6 @@ newtype EventDisplayDeleteId = EventDisplayDeleteId {deletedId :: Word32}
   deriving (Binary) via (LittleEndian EventDisplayDeleteId)
 
 instance WaylandEventType EventDisplayDeleteId where
-  eventName _ = "delete_id"
   formatEvent objId e =
     printf "wl_display@%i.delete_id: id=%i" objId e.deletedId
 
@@ -148,7 +147,6 @@ newtype EventXdgWmBasePing = EventXdgWmBasePing {serial :: Word32}
   deriving (Binary) via (LittleEndian EventXdgWmBasePing)
 
 instance WaylandEventType EventXdgWmBasePing where
-  eventName _ = "ping"
   formatEvent objId e =
     printf "xdg_wm_base@%i.ping: serial=%i" objId e.serial
 
@@ -157,34 +155,32 @@ newtype EventXdgSurfaceConfigure = EventXdgSurfaceConfigure {serial :: Word32}
   deriving (Binary) via (LittleEndian EventXdgSurfaceConfigure)
 
 instance WaylandEventType EventXdgSurfaceConfigure where
-  eventName _ = "configure"
   formatEvent objId e =
     printf "xdg_surface@%i.configure: serial=%i" objId e.serial
 
 data EventXdgToplevelConfigure = EventXdgToplevelConfigure
   { width :: Int32
   , height :: Int32
-  , states :: ByteString
+  , states :: WlArray Word32
   }
   deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventXdgToplevelConfigure)
 
 instance WaylandEventType EventXdgToplevelConfigure where
-  eventName _ = "configure"
   formatEvent objId e =
-    printf
-      "xdg_toplevel@%i.configure: width=%i height=%i states=%i bytes"
-      objId
-      e.width
-      e.height
-      (length e.states)
+    let WlArray stateList = e.states
+     in printf
+          "xdg_toplevel@%i.configure: width=%i height=%i states=[%s]"
+          objId
+          e.width
+          e.height
+          (Relude.intercalate "," $ map stateName stateList)
 
 data EventXdgToplevelClose = EventXdgToplevelClose
   deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventXdgToplevelClose)
 
 instance WaylandEventType EventXdgToplevelClose where
-  eventName _ = "close"
   formatEvent objId _ = printf "xdg_toplevel@%i.close" objId
 
 data EventXdgToplevelConfigureBounds = EventXdgToplevelConfigureBounds
@@ -195,7 +191,6 @@ data EventXdgToplevelConfigureBounds = EventXdgToplevelConfigureBounds
   deriving (Binary) via (LittleEndian EventXdgToplevelConfigureBounds)
 
 instance WaylandEventType EventXdgToplevelConfigureBounds where
-  eventName _ = "configure_bounds"
   formatEvent objId e =
     printf
       "xdg_toplevel@%i.configure_bounds: width=%i height=%i"
@@ -204,17 +199,17 @@ instance WaylandEventType EventXdgToplevelConfigureBounds where
       e.boundsHeight
 
 newtype EventXdgToplevelWmCapabilities = EventXdgToplevelWmCapabilities
-  {capabilities :: ByteString}
+  {capabilities :: WlArray Word32}
   deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventXdgToplevelWmCapabilities)
 
 instance WaylandEventType EventXdgToplevelWmCapabilities where
-  eventName _ = "wm_capabilities"
   formatEvent objId e =
-    printf
-      "xdg_toplevel@%i.wm_capabilities: capabilities=%i bytes"
-      objId
-      (length e.capabilities)
+    let WlArray caps = e.capabilities
+     in printf
+          "xdg_toplevel@%i.wm_capabilities: capabilities=[%s]"
+          objId
+          (Relude.intercalate "," $ map wmCapName caps)
 
 -- GADT for type-safe event variants
 data WaylandEvent where
@@ -237,6 +232,26 @@ formatName :: Word32 -> String
 formatName 0 = "ARGB8888"
 formatName 1 = "XRGB8888"
 formatName n = "format_" <> show n
+
+-- XDG toplevel state names
+stateName :: Word32 -> String
+stateName 1 = "maximized"
+stateName 2 = "fullscreen"
+stateName 3 = "resizing"
+stateName 4 = "activated"
+stateName 5 = "tiled_left"
+stateName 6 = "tiled_right"
+stateName 7 = "tiled_top"
+stateName 8 = "tiled_bottom"
+stateName n = "state_" <> show n
+
+-- XDG toplevel wm_capabilities names
+wmCapName :: Word32 -> String
+wmCapName 1 = "window_menu"
+wmCapName 2 = "maximize"
+wmCapName 3 = "fullscreen"
+wmCapName 4 = "minimize"
+wmCapName n = "cap_" <> show n
 
 -- Helper to create events
 mkEvent :: (Binary a, WaylandEventType a, Typeable a) => Header -> a -> WaylandEvent
