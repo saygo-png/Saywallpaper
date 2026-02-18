@@ -23,5 +23,5 @@ instance Binary Header where
 
 instance ToString Header where
   toString :: Header -> String
-  toString (Header oi op sz) =
-    printf "-- wl_header: objectID=%i opCode=%i size=%i" oi op sz
+  toString (Header objectID opCode size) =
+    printf "-- wl_header: objectID=%i opCode=%i size=%i" objectID opCode size
