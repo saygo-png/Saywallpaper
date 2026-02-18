@@ -18,17 +18,6 @@ import Relude hiding (ByteString, Word32, get, isPrefixOf, put, replicate)
 import Text.Printf
 import Utils
 
--- Helper functions for Wayland wire format
-getWlString :: Get ByteString
-getWlString = do
-  len <- getWord32le
-  getLazyByteString (padLen len)
-
-putWlString :: ByteString -> Put
-putWlString bs = do
-  putWord32le (fromIntegral $ Data.ByteString.Lazy.length bs)
-  putLazyByteString bs
-
 -- Generic little-endian Binary deriving
 type GBinaryLE :: forall {k}. (k -> Type) -> Constraint
 class GBinaryLE f where
@@ -202,6 +191,23 @@ newtype EventXdgToplevelWmCapabilities = EventXdgToplevelWmCapabilities
   {capabilities :: WlArray Word32}
   deriving stock (Generic, Show)
   deriving (Binary) via (LittleEndian EventXdgToplevelWmCapabilities)
+
+data EventWlrLayerSurfaceConfigure = EventWlrLayerSurfaceConfigure
+  { serial :: Int32
+  , width :: Int32
+  , height :: Int32
+  }
+  deriving stock (Generic, Show)
+  deriving (Binary) via (LittleEndian EventWlrLayerSurfaceConfigure)
+
+instance WaylandEventType EventWlrLayerSurfaceConfigure where
+  formatEvent objId e =
+    printf
+      "zwlr_layer_surface_v1@%i.configure: serial=%i width=%i height=%i"
+      objId
+      e.serial
+      e.width
+      e.height
 
 instance WaylandEventType EventXdgToplevelWmCapabilities where
   formatEvent objId e =
