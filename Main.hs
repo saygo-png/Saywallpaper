@@ -356,12 +356,13 @@ main = do
   void $ zwlrLayerSurfaceV1ackConfigure wl_display trackerRef
 
   font <- either (error . toText) pure =<< loadFontFile "CourierPrime-Regular.ttf"
-  let bgColor = PixelRGBA8 0 0 0 255
-      drawColor = PixelRGBA8 255 255 255 255
+  let bgColor = PixelRGBA8 0 0 0 0
+      drawColor = PixelRGBA8 213 196 161 255 -- #d5c4a1
       img = renderDrawing (fromIntegral bufferWidth) (fromIntegral bufferHeight) bgColor $ do
         withTexture (uniformTexture drawColor) $ do
           printTextAt font (PointSize 12) (V2 20 15) "date: 2026-02-18 21:13. internet: connected. tray: steam and discord open. Data last updated at compile time with my keyboard"
-  writePng "text_example.png" img
+
+  writePng "foo.png" img
 
   void
     $ bracket
@@ -374,17 +375,18 @@ main = do
 
           file_handle <- fdToHandle fileDescriptor
 
-          let swizzleRGBAtoBGRA :: Image PixelRGBA8 -> ByteString
+          let swizzleRGBAtoBGRA :: Image PixelRGBA8 -> BS.ByteString
               swizzleRGBAtoBGRA image =
-                pack . go . VS.toList $ imageData image
+                BS.pack . go . VS.toList $ imageData image
                 where
                   go [] = []
-                  go (r : g : b : a : rest) = b : g : r : a : go rest
+                  go (r : g : b : a : rest) =
+                    let premul c = fromIntegral (fromIntegral c * fromIntegral a `div` 255 :: Word16)
+                     in premul b : premul g : premul r : a : go rest
                   go _ = []
 
-          let pixelData' = swizzleRGBAtoBGRA img
-          let pixelData = runPut $ do replicateM_ (fromIntegral $ bufferWidth * bufferHeight) $ putWord32le 0x00FF0000
-          hPut file_handle pixelData'
+          let pixelData = swizzleRGBAtoBGRA img
+          BS.hPut file_handle pixelData
 
           void $ wlSurfaceAttach wl_display trackerRef
           void $ wlSurfaceCommit wl_display trackerRef
