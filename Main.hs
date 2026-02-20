@@ -103,17 +103,11 @@ wlDisplayGetRegistry wl_display newObjectID = do
 
 wlRegistryBind :: Socket -> Word32 -> IORef ObjectTracker -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> ByteString -> Word32 -> Word32 -> IO Word32
 wlRegistryBind sock registryID trackerRef updateFn globalName interfaceName interfaceVersion newObjectID = do
-  let interfaceStr = interfaceName <> "\0" -- Null-terminated string
-  let interfaceLen = fromIntegral $ length interfaceStr
-  let paddingBytes = padLen interfaceLen - fromIntegral interfaceLen
-
   let messageBody = runPut $ do
-        putWord32le globalName -- name
-        putWord32le interfaceLen -- string length
-        putLazyByteString interfaceStr -- interface string
-        replicateM_ (fromIntegral paddingBytes) (putWord8 0) -- padding
-        putWord32le interfaceVersion -- version
-        putWord32le newObjectID -- new_id
+        putWord32le globalName
+        putWlString interfaceName
+        putWord32le interfaceVersion
+        putWord32le newObjectID
   sendAll sock $ mkMessage registryID 0 messageBody
 
   putStrLn
@@ -361,8 +355,6 @@ main = do
       img = renderDrawing (fromIntegral bufferWidth) (fromIntegral bufferHeight) bgColor $ do
         withTexture (uniformTexture drawColor) $ do
           printTextAt font (PointSize 12) (V2 20 15) "date: 2026-02-18 21:13. internet: connected. tray: steam and discord open. Data last updated at compile time with my keyboard"
-
-  writePng "foo.png" img
 
   void
     $ bracket
