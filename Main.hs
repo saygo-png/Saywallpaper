@@ -4,7 +4,7 @@
 
 module Main (main) where
 
-import Codec.Picture (Image (imageData), PixelRGBA8 (..), writePng)
+import Codec.Picture (Image (imageData), PixelRGBA8 (..))
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Exception
 import Data.Binary hiding (get, put)
@@ -18,7 +18,6 @@ import Data.ByteString.Lazy.Internal qualified as BSL
 import Data.Int
 import Data.Maybe (fromJust)
 import Data.Typeable
-import Data.Vector.Storable qualified as VS
 import Events
 import Graphics.Rasterific
 import Graphics.Rasterific.Texture
@@ -48,16 +47,24 @@ wlDisplayID = 1 -- wlDisplay always has ID 1 in the protocol
 type Wayland = ReaderT WaylandEnv IO
 
 data WaylandEnv = WaylandEnv
-  { socket :: Socket
+  { tracker :: IORef ObjectTracker
+  , socket :: Socket
   , counter :: IORef Word32
-  , tracker :: IORef ObjectTracker
+  , registryID :: Word32
+  , wl_shmID :: Word32
+  , wl_compositorID :: Word32
+  , zwlr_layer_shell_v1ID :: Word32
+  , parseEvents :: ObjectTracker -> Get [WaylandEvent]
   }
 
-nextID :: IORef Word32 -> Wayland Word32
-nextID counter = do
+nextID' :: IORef Word32 -> IO Word32
+nextID' counter = do
   current <- readIORef counter
   modifyIORef counter (+ 1)
   return current
+
+nextID :: IORef Word32 -> Wayland Word32
+nextID = liftIO . nextID'
 
 mkMessage :: Word32 -> Word16 -> ByteString -> ByteString
 mkMessage objectID opCode messageBody =
@@ -76,15 +83,15 @@ wlDisplayConnect = do
   connect sock (SockAddrUnix path)
   return sock
 
-receiveSocketData :: Wayland ByteString
-receiveSocketData = do
-  env <- ask
-  liftIO $ recv env.socket 4096
+receiveSocketData :: Socket -> IO ByteString
+receiveSocketData sock = do
+  liftIO $ recv sock 4096
 
-parseEvent :: ObjectTracker -> Get WaylandEvent
-parseEvent tracker = do
+parseEvent :: Word32 -> Maybe Word32 -> ObjectTracker -> Get WaylandEvent
+parseEvent registryID wl_shmID tracker = do
   header <- Bin.get
   let matchEvent' = matchEvent header
+  let maybeMatchEvent' = maybeMatchEvent header
   let bodySize = fromIntegral header.size - 8
   let ev :: (Binary a, WaylandEventType a, Typeable a) => Get a -> Get WaylandEvent
       ev = fmap (Event header)
@@ -93,42 +100,41 @@ parseEvent tracker = do
     (1, 0) -> ev (Bin.get @EventDisplayError)
     (1, 1) -> ev (Bin.get @EventDisplayDeleteId)
     _
-      | matchEvent' tracker.registryID 0 -> ev (Bin.get @EventGlobal)
-      | matchEvent' tracker.registryID 1 -> skip bodySize $> EvUnknown header
-      | matchEvent' tracker.wl_shmID 0 -> ev (Bin.get @EventShmFormat)
-      | matchEvent' tracker.zwlr_layer_surface_v1ID 0 -> ev (Bin.get @EventWlrLayerSurfaceConfigure)
+      | matchEvent' registryID 0 -> ev (Bin.get @EventGlobal)
+      | matchEvent' registryID 1 -> skip bodySize $> EvUnknown header
+      | maybeMatchEvent' wl_shmID 0 -> ev (Bin.get @EventShmFormat)
+      | maybeMatchEvent' tracker.zwlr_layer_surface_v1ID 0 -> ev (Bin.get @EventWlrLayerSurfaceConfigure)
       | otherwise -> skip bodySize $> EvUnknown header
   where
-    matchEvent :: Header -> Maybe Word32 -> Word16 -> Bool
-    matchEvent header (Just oid) opcode = oid == header.objectID && header.opCode == opcode
-    matchEvent _ Nothing _ = False
+    maybeMatchEvent :: Header -> Maybe Word32 -> Word16 -> Bool
+    maybeMatchEvent header (Just oid) opcode = matchEvent header oid opcode
+    maybeMatchEvent _ Nothing _ = False
 
-parseEvents :: ObjectTracker -> Get [WaylandEvent]
-parseEvents tracker = do
+    matchEvent :: Header -> Word32 -> Word16 -> Bool
+    matchEvent header oid opcode = oid == header.objectID && header.opCode == opcode
+
+parseEvents :: Word32 -> Maybe Word32 -> ObjectTracker -> Get [WaylandEvent]
+parseEvents registryID wl_shmID tracker = do
   isEmpty >>= \case
     True -> return []
-    False -> (:) <$> parseEvent tracker <*> parseEvents tracker
+    False -> (:) <$> parseEvent registryID wl_shmID tracker <*> parseEvents registryID wl_shmID tracker
 
-wlDisplay_getRegistry :: Wayland ()
-wlDisplay_getRegistry = do
-  env <- ask
-  newObjectID <- nextID env.counter
-  let messageBody = runPut $ putWord32le newObjectID
-  liftIO $ sendAll env.socket $ mkMessage wlDisplayID 1 messageBody
-  putStrLn $ printf "  --> wl_display@1.get_registry: wl_registry=%i" newObjectID
-  modifyIORef' env.tracker $ \t -> t{registryID = Just newObjectID}
+wlDisplay_getRegistry :: Socket -> IORef Word32 -> IO Word32
+wlDisplay_getRegistry sock counter = do
+  registryID <- nextID' counter
+  let messageBody = runPut $ putWord32le registryID
+  liftIO $ sendAll sock $ mkMessage wlDisplayID 1 messageBody
+  putStrLn $ printf "  --> wl_display@1.get_registry: wl_registry=%i" registryID
+  pure registryID
 
-wlRegistry_bind :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> ByteString -> Word32 -> Wayland ()
-wlRegistry_bind updateFn globalName interfaceName interfaceVersion = do
-  env <- ask
-  registryID <- fromJust . (.registryID) <$> readIORef env.tracker
-  newObjectID <- nextID env.counter
+wlRegistry_bind :: Socket -> Word32 -> Word32 -> ByteString -> Word32 -> Word32 -> IO Word32
+wlRegistry_bind sock registryID globalName interfaceName interfaceVersion newObjectID = do
   let messageBody = runPut $ do
         putWord32le globalName
         putWlString interfaceName
         putWord32le interfaceVersion
         putWord32le newObjectID
-  liftIO $ sendAll env.socket $ mkMessage registryID 0 messageBody
+  liftIO $ sendAll sock $ mkMessage registryID 0 messageBody
 
   putStrLn
     $ printf
@@ -138,18 +144,17 @@ wlRegistry_bind updateFn globalName interfaceName interfaceVersion = do
       (BSL.unpackChars interfaceName)
       interfaceVersion
       newObjectID
-  modifyIORef' env.tracker $ \t -> updateFn t (Just newObjectID)
+  pure newObjectID
 
 wlCompositor_createSurface :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Wayland ()
 wlCompositor_createSurface updateFn = do
   env <- ask
-  wl_compositorID <- fromJust . (.wl_compositorID) <$> readIORef env.tracker
   newObjectID <- nextID env.counter
 
   let messageBody = runPut $ putWord32le newObjectID
-  liftIO $ sendAll env.socket $ mkMessage wl_compositorID 0 messageBody
+  liftIO $ sendAll env.socket $ mkMessage env.wl_compositorID 0 messageBody
 
-  putStrLn $ printf " --> wl_compositor@%i.create_surface: newID=%i" wl_compositorID newObjectID
+  putStrLn $ printf " --> wl_compositor@%i.create_surface: newID=%i" env.wl_compositorID newObjectID
   modifyIORef' env.tracker $ \t -> updateFn t (Just newObjectID)
 
 wlSurface_commit :: Wayland ()
@@ -182,9 +187,8 @@ wlSurface_attach = do
 wlShm_createPool :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Fd -> Word32 -> Wayland ()
 wlShm_createPool updateFn fileDescriptor size = do
   env <- ask
-  tracker <- readIORef env.tracker
   newObjectID <- nextID env.counter
-  let wl_shmID = fromJust tracker.wl_shmID
+  let wl_shmID = env.wl_shmID
   let messageBody = runPut $ do
         putWord32le newObjectID
         putWord32le size
@@ -199,7 +203,7 @@ zwlrLayerShellV1_getLayerSurface updateFn layer namespace = do
   env <- ask
   tracker <- readIORef env.tracker
   newObjectID <- nextID env.counter
-  let zwlr_layer_shell_v1ID = fromJust tracker.zwlr_layer_shell_v1ID
+  let zwlr_layer_shell_v1ID = env.zwlr_layer_shell_v1ID
   let wl_surfaceID = fromJust tracker.wl_surfaceID
 
   let messageBody = runPut $ do
@@ -284,19 +288,21 @@ findInterface messages targetInterface =
   let target = targetInterface <> "\0"
    in Relude.find (\(_, e) -> target `isPrefixOf` e.interface) messages >>= Just . snd
 
-bindToInterface :: [(Header, EventGlobal)] -> ByteString -> (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Wayland ()
-bindToInterface globals targetInterface updateFn =
+bindToInterface :: Socket -> Word32 -> IORef Word32 -> [(Header, EventGlobal)] -> ByteString -> IO Word32
+bindToInterface sock registryID counterRef globals targetInterface =
   case findInterface globals targetInterface of
-    Nothing -> putStrLn ("ERROR: " <> BSL.unpackChars targetInterface <> " not found")
-    Just e -> wlRegistry_bind updateFn e.name targetInterface e.version
+    Nothing -> error ("ERROR: " <> toText (BSL.unpackChars targetInterface) <> " not found")
+    Just e -> do
+      newObjectID <- nextID' counterRef
+      wlRegistry_bind sock registryID e.name targetInterface e.version newObjectID
 
 eventLoop :: Wayland ()
 eventLoop = do
   env <- ask
-  msg <- receiveSocketData
+  msg <- liftIO $ receiveSocketData env.socket
   tracker <- readIORef env.tracker
   unless (BSL.null msg) $ do
-    let events = runGet (parseEvents tracker) msg
+    let events = runGet (env.parseEvents tracker) msg
     forM_ events $ \event -> do
       liftIO $ displayEvent event
       handleEventResponse event -- Handle events that need responses
@@ -309,40 +315,55 @@ handleEventResponse (Event _h e) = do
 handleEventResponse _ = return ()
 
 data ObjectTracker = ObjectTracker
-  { registryID :: Maybe Word32
-  , wl_shmID :: Maybe Word32
-  , wl_compositorID :: Maybe Word32
-  , wl_surfaceID :: Maybe Word32
+  { wl_surfaceID :: Maybe Word32
   , wl_shm_poolID :: Maybe Word32
   , wl_bufferID :: Maybe Word32
-  , zwlr_layer_shell_v1ID :: Maybe Word32
   , zwlr_layer_surface_v1ID :: Maybe Word32
   , zwlr_layer_surface_v1Serial :: Maybe Word32
   }
 
 main :: IO ()
-main = do
-  env <- WaylandEnv <$> wlDisplayConnect <*> newIORef 2 <*> newIORef (ObjectTracker Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing)
-  runReaderT program env
+main = runReaderT program =<< waylandSetup
+
+waylandSetup :: IO WaylandEnv
+waylandSetup = do
+  sock <- wlDisplayConnect
+  counter <- newIORef 2 -- start from 2 because wl_display is always 1
+  registry <- wlDisplay_getRegistry sock counter
+  socketData <- receiveSocketData sock
+  tracker <- newIORef (ObjectTracker Nothing Nothing Nothing Nothing Nothing)
+  initialEvents <- runGet . parseEvents registry Nothing <$> readIORef tracker <*> pure socketData
+  mapM_ displayEvent initialEvents
+  let globals = [(h, g) | ev <- initialEvents, Event h e <- [ev], Just g <- [cast e :: Maybe EventGlobal]]
+
+  putStrLn "\n--- Binding to interfaces ---"
+  wl_shm <- bindToInterface sock registry counter globals "wl_shm"
+  wl_compositor <- bindToInterface sock registry counter globals "wl_compositor"
+  zwlr_layer_shell_v1 <- bindToInterface sock registry counter globals "zwlr_layer_shell_v1"
+
+  let eventParser = parseEvents registry (Just wl_shm)
+
+  pure
+    $ WaylandEnv
+      tracker
+      sock
+      counter
+      registry
+      wl_shm
+      wl_compositor
+      zwlr_layer_shell_v1
+      eventParser
 
 program :: Wayland ()
 program = do
   env <- ask
-  wlDisplay_getRegistry
-  socketData <- receiveSocketData
-  initialEvents <- runGet . parseEvents <$> readIORef env.tracker <*> pure socketData
-  liftIO $ mapM_ displayEvent initialEvents
-
-  -- Extract globals from events
-  let globals = [(h, g) | ev <- initialEvents, Event h e <- [ev], Just g <- [cast e :: Maybe EventGlobal]]
-
   let colorChannels :: Word32 = 4
-  let bufferWidth :: Word32 = 1920
-  let bufferHeight :: Word32 = 25
-  let stride :: Word32 = bufferWidth * colorChannels
-  let colorFormat :: Word32 = 0 -- ARGB8888
-  let sharedPoolSize :: Word32 = bufferWidth * bufferHeight * colorChannels
-  let poolName :: String = "saybar-shared-pool"
+      bufferWidth :: Word32 = 1920
+      bufferHeight :: Word32 = 25
+      stride :: Word32 = bufferWidth * colorChannels
+      colorFormat :: Word32 = 0 -- ARGB8888
+      sharedPoolSize :: Word32 = bufferWidth * bufferHeight * colorChannels
+      poolName :: String = "saybar-shared-pool"
 
   liftIO
     . void
@@ -352,12 +373,6 @@ program = do
       (close env.socket)
 
   liftIO $ threadDelay 100000
-
-  -- Bind to the required interfaces
-  putStrLn "\n--- Binding to interfaces ---"
-  bindToInterface globals "wl_shm" $ \t objectID -> t{wl_shmID = objectID}
-  bindToInterface globals "wl_compositor" $ \t objectID -> t{wl_compositorID = objectID}
-  bindToInterface globals "zwlr_layer_shell_v1" $ \t objectID -> t{zwlr_layer_shell_v1ID = objectID}
 
   wlCompositor_createSurface $ \t objectID -> t{wl_surfaceID = objectID}
   zwlrLayerShellV1_getLayerSurface (\t objectID -> t{zwlr_layer_surface_v1ID = objectID}) 2 "saybar"
@@ -387,18 +402,8 @@ program = do
 
           file_handle <- liftIO $ fdToHandle fileDescriptor
 
-          let swizzleRGBAtoBGRA :: Image PixelRGBA8 -> BS.ByteString
-              swizzleRGBAtoBGRA image =
-                BS.pack . go . VS.toList $ imageData image
-                where
-                  go [] = []
-                  go (r : g : b : a : rest) =
-                    let premul c = fromIntegral (fromIntegral c * fromIntegral a `div` 255 :: Word16)
-                     in premul b : premul g : premul r : a : go rest
-                  go _ = []
-
           let pixelData = swizzleRGBAtoBGRA img
-          liftIO $ BS.hPut file_handle pixelData
+          liftIO $ hPut file_handle pixelData
 
           wlSurface_attach
           wlSurface_commit
