@@ -16,6 +16,7 @@ import GHC.Generics
 import Headers
 import Relude hiding (ByteString, Word32, get, isPrefixOf, put, replicate)
 import Text.Printf
+import Types
 import Utils
 
 -- Generic little-endian Binary deriving
@@ -51,6 +52,7 @@ instance GBinaryLE (K1 i ByteString) where
 
 -- Wayland array type - typed array with length-prefixed wire format
 type role WlArray representational
+
 newtype WlArray a = WlArray [a]
   deriving stock (Show)
 
@@ -73,10 +75,6 @@ newtype LittleEndian a = LittleEndian a
 instance (Generic a, GBinaryLE (Rep a)) => Binary (LittleEndian a) where
   get = LittleEndian . to <$> ggetLE
   put (LittleEndian x) = gputLE (from x)
-
--- Type class for events that can describe themselves
-class WaylandEventType a where
-  formatEvent :: Word32 -> a -> String
 
 data EventGlobal = EventGlobal
   { name :: Word32
@@ -148,11 +146,6 @@ instance WaylandEventType EventWlrLayerSurfaceConfigure where
       e.serial
       e.width
       e.height
-
--- GADT for type-safe event variants
-data WaylandEvent where
-  Event :: (Binary a, WaylandEventType a, Typeable a) => Header -> a -> WaylandEvent
-  EvUnknown :: Header -> WaylandEvent
 
 -- Single display function that works for all events
 displayEvent :: WaylandEvent -> IO ()
