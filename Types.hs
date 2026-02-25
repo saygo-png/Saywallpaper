@@ -7,6 +7,10 @@ import Relude hiding (ByteString, get, isPrefixOf, length, put, replicate)
 
 type Wayland = ReaderT WaylandEnv IO
 
+data BarState = BarState {
+  date :: Text
+};
+
 data WaylandEnv = WaylandEnv
   { tracker :: IORef ObjectTracker
   , socket :: Socket

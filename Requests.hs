@@ -1,5 +1,6 @@
 module Requests (wlDisplay_getRegistry, wlShm_createPool, wlSurface_attach, zwlrLayerShellV1_getLayerSurface, zwlrLayerSurfaceV1_setAnchor, zwlrLayerSurfaceV1_setSize, zwlrLayerSurfaceV1_ackConfigure, zwlrLayerSurfaceV1_setExclusiveZone, wlShmPool_createBuffer, wlRegistry_bind, wlCompositor_createSurface, wlSurface_commit) where
 
+import Config
 import Data.Binary
 import Data.Binary.Put
 import Data.ByteString qualified as BS
@@ -25,19 +26,20 @@ wlDisplay_getRegistry sock counter = do
   strReq ("wl_display", wlDisplayID, "get_registry") $ printf "wl_registry=%i" registryID
   pure registryID
 
-wlShm_createPool :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Fd -> Word32 -> Wayland ()
-wlShm_createPool updateFn fileDescriptor size = do
+wlShm_createPool :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Fd -> Wayland ()
+wlShm_createPool updateFn fileDescriptor = do
   env <- ask
   newObjectID <- nextID env.counter
+  let poolSize = bufferWidth * bufferHeight * colorChannels
   let wl_shmID = env.wl_shmID
       messageBody = runPut $ do
         putWord32le newObjectID
-        putWord32le size
+        putWord32le poolSize
   let msg = BS.toStrict $ mkMessage wl_shmID 0 messageBody
   liftIO $ sendManyWithFds env.socket [msg] [fileDescriptor]
 
   let sender = ("wl_shm", wl_shmID, "create_pool")
-  liftIO . strReq sender $ printf "newID=%i fd=%s size=%i" newObjectID (show @Text fileDescriptor) size
+  liftIO . strReq sender $ printf "newID=%i fd=%s size=%i" newObjectID (show @Text fileDescriptor) poolSize
 
   modifyIORef' env.tracker $ \t -> updateFn t (Just newObjectID)
 
@@ -132,8 +134,8 @@ zwlrLayerSurfaceV1_setExclusiveZone zone = do
   let sender = ("zwlr_layer_surface_v1", zwlr_layer_surface_v1ID, "set_exclusive_zone")
   liftIO . strReq sender $ printf "zone=%i" zone
 
-wlShmPool_createBuffer :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> Word32 -> Word32 -> Word32 -> Word32 -> Wayland ()
-wlShmPool_createBuffer updateFn offset width height stride format = do
+wlShmPool_createBuffer :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> Wayland ()
+wlShmPool_createBuffer updateFn offset = do
   env <- ask
   tracker <- readIORef env.tracker
   newObjectID <- nextID env.counter
@@ -142,10 +144,10 @@ wlShmPool_createBuffer updateFn offset width height stride format = do
   let messageBody = runPut $ do
         putWord32le newObjectID
         putWord32le offset
-        putWord32le width
-        putWord32le height
-        putWord32le stride
-        putWord32le format
+        putWord32le bufferWidth
+        putWord32le bufferHeight
+        putWord32le $ bufferWidth * colorChannels -- Stride
+        putWord32le colorFormat
   liftIO . sendAll env.socket $ mkMessage wl_shm_poolID 0 messageBody
 
   let sender = ("wl_shm_pool", wl_shm_poolID, "create_buffer")
