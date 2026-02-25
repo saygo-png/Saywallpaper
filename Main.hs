@@ -19,12 +19,15 @@ import Headers
 import Network.Socket
 import Relude hiding (ByteString, get, isPrefixOf, put)
 import Requests
+import Config
 import System.Environment (getEnv)
-import System.Posix (fileExist, nullFileMode, ownerReadMode, ownerWriteMode, setFdSize, unionFileModes)
+import System.Posix (ownerReadMode, ownerWriteMode, setFdSize, unionFileModes)
 import System.Posix.IO
 import System.Posix.SharedMem
 import Types
 import Utils
+
+-- import Config
 
 wlDisplayConnect :: IO Socket
 wlDisplayConnect = do
@@ -133,13 +136,6 @@ waylandSetup = do
 program :: Wayland ()
 program = do
   env <- ask
-  let colorChannels :: Word32 = 4
-      bufferWidth :: Word32 = 1920
-      bufferHeight :: Word32 = 25
-      stride :: Word32 = bufferWidth * colorChannels
-      colorFormat :: Word32 = 0 -- ARGB8888
-      sharedPoolSize :: Word32 = bufferWidth * bufferHeight * colorChannels
-      poolName :: String = "saybar-shared-pool"
 
   liftIO
     . void
@@ -164,18 +160,13 @@ program = do
         withTexture (uniformTexture drawColor) $ do
           printTextAt font (PointSize 12) (V2 20 15) "date: 2026-02-18 21:13. internet: connected. tray: steam and discord open. Data last updated at compile time with my keyboard"
 
-  liftIO
-    . void
-    $ bracket
-      ( do
-          -- (traceShowId <$> fileExist poolName) >>= flip when (shmUnlink poolName)
-          shmOpen poolName (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
-      )
-      (\_fd -> shmUnlink poolName)
-      ( \fileDescriptor -> flip runReaderT env $ do
-          liftIO $ setFdSize fileDescriptor (fromIntegral sharedPoolSize)
-          wlShm_createPool (\t objectID -> t{wl_shm_poolID = objectID}) fileDescriptor sharedPoolSize
-          _wl_buffer <- wlShmPool_createBuffer (\t objectID -> t{wl_bufferID = objectID}) 0 bufferWidth bufferHeight stride colorFormat
+  let makeSharedMemoryObject = shmOpen poolName (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
+      removeSharedMemoryObject _ = shmUnlink poolName
+      useSharedMemoryObject fileDescriptor =
+        flip runReaderT env $ do
+          liftIO . setFdSize fileDescriptor $ fromIntegral (bufferWidth * bufferHeight * colorChannels)
+          wlShm_createPool (\t objectID -> t{wl_shm_poolID = objectID}) fileDescriptor
+          _wl_buffer <- wlShmPool_createBuffer (\t objectID -> t{wl_bufferID = objectID}) 0
 
           file_handle <- liftIO $ fdToHandle fileDescriptor
 
@@ -185,4 +176,5 @@ program = do
           wlSurface_attach
           wlSurface_commit
           liftIO $ threadDelay maxBound
-      )
+
+  liftIO . void $ bracket makeSharedMemoryObject removeSharedMemoryObject useSharedMemoryObject

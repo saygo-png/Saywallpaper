@@ -17,4 +17,4 @@ executable saybar
   import:         common-options
   hs-source-dirs: .
   main-is:        Main.hs
-  other-modules: Events, Headers, Utils, Requests, Types
+  other-modules: Events, Headers, Utils, Requests, Types, Config
