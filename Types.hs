@@ -23,7 +23,7 @@ data ObjectTracker = ObjectTracker
   , wl_shm_poolID :: Maybe Word32
   , wl_bufferID :: Maybe Word32
   , zwlr_layer_surface_v1ID :: Maybe Word32
-  , zwlr_layer_surface_v1Serial :: Maybe Word32
+  , zwlr_layer_surface_v1Serial :: TMVar Word32
   }
 
 data WaylandEvent where
