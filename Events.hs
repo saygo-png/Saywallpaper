@@ -130,6 +130,13 @@ instance WaylandEventType EventDisplayDeleteId where
   formatEvent objId e =
     printf "wl_display@%i.delete_id: id=%i" objId e.deletedId
 
+data EventBufferRelease = EventBufferRelease
+  deriving stock (Generic, Show)
+
+instance WaylandEventType EventBufferRelease where
+  formatEvent objId _e =
+    printf "wl_buffer@%i.release: buffer released" objId
+
 data EventWlrLayerSurfaceConfigure = EventWlrLayerSurfaceConfigure
   { serial :: Word32
   , width :: Word32
@@ -150,13 +157,8 @@ instance WaylandEventType EventWlrLayerSurfaceConfigure where
 -- Single display function that works for all events
 displayEvent :: WaylandEvent -> IO ()
 displayEvent (Event h e) = putStrLn $ "<- " <> formatEvent h.objectID e
-displayEvent (EvUnknown h) =
-  putStrLn
-    $ printf
-      "<- unknown event: objectID=%i opCode=%i size=%i"
-      h.objectID
-      h.opCode
-      h.size
+displayEvent (EvEmpty h e) = putStrLn $ "<- " <> formatEvent h.objectID e
+displayEvent (EvUnknown h) = putStrLn $ printf "<- unknown event: objectID=%i opCode=%i size=%i" h.objectID h.opCode h.size
 
 -- Format names for wl_shm
 formatName :: Word32 -> String

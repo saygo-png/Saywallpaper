@@ -1,4 +1,4 @@
-module Requests (wlDisplay_getRegistry, wlShm_createPool, wlSurface_attach, zwlrLayerShellV1_getLayerSurface, zwlrLayerSurfaceV1_setAnchor, zwlrLayerSurfaceV1_setSize, zwlrLayerSurfaceV1_ackConfigure, zwlrLayerSurfaceV1_setExclusiveZone, wlShmPool_createBuffer, wlRegistry_bind, wlCompositor_createSurface, wlSurface_commit) where
+module Requests (wlDisplay_getRegistry, wlShm_createPool, wlSurface_attach, zwlrLayerShellV1_getLayerSurface, zwlrLayerSurfaceV1_setAnchor, zwlrLayerSurfaceV1_setSize, zwlrLayerSurfaceV1_ackConfigure, zwlrLayerSurfaceV1_setExclusiveZone, wlShmPool_createBuffer, wlRegistry_bind, wlCompositor_createSurface, wlSurface_commit, wlSurface_damageBuffer) where
 
 import Config
 import Data.Binary
@@ -26,11 +26,10 @@ wlDisplay_getRegistry sock counter = do
   strReq ("wl_display", wlDisplayID, "get_registry") $ printf "wl_registry=%i" registryID
   pure registryID
 
-wlShm_createPool :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Fd -> Wayland ()
-wlShm_createPool updateFn fileDescriptor = do
+wlShm_createPool :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> Fd -> Wayland ()
+wlShm_createPool updateFn poolSize fileDescriptor = do
   env <- ask
   newObjectID <- nextID env.counter
-  let poolSize = bufferWidth * bufferHeight * colorChannels
   let wl_shmID = env.wl_shmID
       messageBody = runPut $ do
         putWord32le newObjectID
@@ -43,12 +42,11 @@ wlShm_createPool updateFn fileDescriptor = do
 
   modifyIORef' env.tracker $ \t -> updateFn t (Just newObjectID)
 
-wlSurface_attach :: Wayland ()
-wlSurface_attach = do
+wlSurface_attach :: Word32 -> Wayland ()
+wlSurface_attach wl_bufferID = do
   env <- ask
   tracker <- readIORef env.tracker
   let wl_surfaceID = fromJust tracker.wl_surfaceID
-      wl_bufferID = fromJust tracker.wl_bufferID
 
   let messageBody = runPut $ do
         putWord32le wl_bufferID
@@ -59,6 +57,22 @@ wlSurface_attach = do
 
   let sender = ("wl_surface", wl_surfaceID, "attach")
   liftIO . strReq sender $ printf "bufferId=%i x=%i y=%i" wl_bufferID (0 :: Int32) (0 :: Int32)
+
+wlSurface_damageBuffer :: Int32 -> Int32 -> Word32 -> Word32 -> Wayland ()
+wlSurface_damageBuffer x y width height = do
+  env <- ask
+  tracker <- readIORef env.tracker
+  let wl_surfaceID = fromJust tracker.wl_surfaceID
+
+  let messageBody = runPut $ do
+        putInt32le x
+        putInt32le y
+        putWord32le width
+        putWord32le height
+  liftIO . sendAll env.socket $ mkMessage wl_surfaceID 9 messageBody
+
+  let sender = ("wl_surface", wl_surfaceID, "damage_buffer")
+  liftIO . strReq sender $ printf "x=%i y=%i width=%i height=%i" x y width height
 
 zwlrLayerShellV1_getLayerSurface :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> ByteString -> Wayland ()
 zwlrLayerShellV1_getLayerSurface updateFn layer namespace = do
@@ -134,7 +148,7 @@ zwlrLayerSurfaceV1_setExclusiveZone zone = do
   let sender = ("zwlr_layer_surface_v1", zwlr_layer_surface_v1ID, "set_exclusive_zone")
   liftIO . strReq sender $ printf "zone=%i" zone
 
-wlShmPool_createBuffer :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> Wayland ()
+wlShmPool_createBuffer :: (ObjectTracker -> Maybe Buffer -> ObjectTracker) -> Word32 -> Wayland ()
 wlShmPool_createBuffer updateFn offset = do
   env <- ask
   tracker <- readIORef env.tracker
@@ -152,7 +166,7 @@ wlShmPool_createBuffer updateFn offset = do
 
   let sender = ("wl_shm_pool", wl_shm_poolID, "create_buffer")
   liftIO . strReq sender $ printf "newID=%i" newObjectID
-  modifyIORef' env.tracker $ \t -> updateFn t (Just newObjectID)
+  modifyIORef' env.tracker $ \t -> updateFn t (Just $ Buffer newObjectID offset)
 
 wlRegistry_bind :: Socket -> Word32 -> Word32 -> ByteString -> Word32 -> Word32 -> IO Word32
 wlRegistry_bind sock registryID globalName interfaceName interfaceVersion newObjectID = do

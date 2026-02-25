@@ -3,6 +3,8 @@
 module Main (main) where
 
 import Codec.Picture (PixelRGBA8 (..))
+import Codec.Picture.Types (Image)
+import Config
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Exception
 import Data.Binary
@@ -10,8 +12,10 @@ import Data.Binary.Get
 import Data.ByteString.Lazy
 import Data.ByteString.Lazy qualified as BSL
 import Data.ByteString.Lazy.Internal qualified as BSL
+import Data.Maybe (fromJust)
 import Data.Typeable
 import Events
+import GHC.IO.Handle
 import Graphics.Rasterific
 import Graphics.Rasterific.Texture
 import Graphics.Text.TrueType (loadFontFile)
@@ -19,15 +23,13 @@ import Headers
 import Network.Socket
 import Relude hiding (ByteString, get, isPrefixOf, put)
 import Requests
-import Config
 import System.Environment (getEnv)
 import System.Posix (ownerReadMode, ownerWriteMode, setFdSize, unionFileModes)
 import System.Posix.IO
 import System.Posix.SharedMem
+import System.Process.Typed
 import Types
 import Utils
-
--- import Config
 
 wlDisplayConnect :: IO Socket
 wlDisplayConnect = do
@@ -53,11 +55,17 @@ parseEvent registryID wl_shmID tracker = do
     | matchEvent' registryID 1 -> skip bodySize $> EvUnknown header
     | maybeMatchEvent' wl_shmID 0 -> ev (get @EventShmFormat)
     | maybeMatchEvent' tracker.zwlr_layer_surface_v1ID 0 -> ev (get @EventWlrLayerSurfaceConfigure)
+    | matchBufferEvent header tracker.wl_buffer_A 0 -> pure $ EvEmpty header EventBufferRelease
+    | matchBufferEvent header tracker.wl_buffer_B 0 -> pure $ EvEmpty header EventBufferRelease
     | otherwise -> skip bodySize $> EvUnknown header
   where
     maybeMatchEvent :: Header -> Maybe Word32 -> Word16 -> Bool
     maybeMatchEvent header (Just oid) opcode = matchEvent header oid opcode
     maybeMatchEvent _ Nothing _ = False
+
+    matchBufferEvent :: Header -> Maybe Buffer -> Word16 -> Bool
+    matchBufferEvent header (Just buffer) opcode = matchEvent header buffer.id opcode
+    matchBufferEvent _ Nothing _ = False
 
     matchEvent :: Header -> Word32 -> Word16 -> Bool
     matchEvent header oid opcode = oid == header.objectID && header.opCode == opcode
@@ -100,6 +108,14 @@ handleEventResponse (Event _ e) = do
     atomically $ putTMVar tracker.zwlr_layer_surface_v1Serial ev.serial
 handleEventResponse _ = return ()
 
+getBarState :: IO BarState
+getBarState = do
+  (dateOut, dateErr) <- readProcess_ "date"
+  pure . BarState $ decodeUtf8 dateOut
+
+renderBarState :: BarState -> Image PixelRGBA8
+renderBarState = undefined
+
 main :: IO ()
 main = runReaderT program =<< waylandSetup
 
@@ -109,7 +125,7 @@ waylandSetup = do
   counter <- newIORef 2 -- start from 2 because wl_display is always 1
   registry <- wlDisplay_getRegistry sock counter
   socketData <- receiveSocketData sock
-  tracker <- newIORef . ObjectTracker Nothing Nothing Nothing Nothing =<< newEmptyTMVarIO
+  tracker <- newIORef . ObjectTracker Nothing Nothing Nothing Nothing Nothing =<< newEmptyTMVarIO
 
   initialEvents <- runGet . parseEvents registry Nothing <$> readIORef tracker <*> pure socketData
   mapM_ displayEvent initialEvents
@@ -144,7 +160,6 @@ program = do
       (putStrLn "\n--- Starting event loop ---" >> runReaderT eventLoop env)
       (close env.socket)
 
-  liftIO $ threadDelay 100000 -- FIX: use stm
   wlCompositor_createSurface $ \t objectID -> t{wl_surfaceID = objectID}
   zwlrLayerShellV1_getLayerSurface (\t objectID -> t{zwlr_layer_surface_v1ID = objectID}) 2 "saybar"
   zwlrLayerSurfaceV1_setAnchor 13 -- top left right anchors
@@ -159,22 +174,46 @@ program = do
       img = renderDrawing (fromIntegral bufferWidth) (fromIntegral bufferHeight) bgColor $ do
         withTexture (uniformTexture drawColor) $ do
           printTextAt font (PointSize 12) (V2 20 15) "date: 2026-02-18 21:13. internet: connected. tray: steam and discord open. Data last updated at compile time with my keyboard"
+      img2 = renderDrawing (fromIntegral bufferWidth) (fromIntegral bufferHeight) bgColor $ do
+        withTexture (uniformTexture drawColor) $ do
+          printTextAt font (PointSize 12) (V2 20 15) "foobar"
+
+      img3 = renderDrawing (fromIntegral bufferWidth) (fromIntegral bufferHeight) bgColor $ do
+        withTexture (uniformTexture drawColor) $ do
+          printTextAt font (PointSize 12) (V2 20 15) "foobar 3"
 
   let makeSharedMemoryObject = shmOpen poolName (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
       removeSharedMemoryObject _ = shmUnlink poolName
       useSharedMemoryObject fileDescriptor =
         flip runReaderT env $ do
-          liftIO . setFdSize fileDescriptor $ fromIntegral (bufferWidth * bufferHeight * colorChannels)
-          wlShm_createPool (\t objectID -> t{wl_shm_poolID = objectID}) fileDescriptor
-          _wl_buffer <- wlShmPool_createBuffer (\t objectID -> t{wl_bufferID = objectID}) 0
+          let frameSize = bufferWidth * bufferHeight * colorChannels
+          let poolSize = 2 * frameSize -- 2x for double buffering
+          liftIO . setFdSize fileDescriptor $ fromIntegral poolSize
+          wlShm_createPool (\t objectID -> t{wl_shm_poolID = objectID}) poolSize fileDescriptor
+          wlShmPool_createBuffer (\t buffer -> t{wl_buffer_A = buffer}) 0
+          wlShmPool_createBuffer (\t buffer -> t{wl_buffer_B = buffer}) frameSize
 
           file_handle <- liftIO $ fdToHandle fileDescriptor
 
-          let pixelData = swizzleRGBAtoBGRA img
-          liftIO $ hPut file_handle pixelData
+          putImage file_handle img BufferA
+          liftIO $ threadDelay 1000000
 
-          wlSurface_attach
-          wlSurface_commit
+          putImage file_handle img2 BufferB
+          liftIO $ threadDelay 1000000
+
+          putImage file_handle img3 BufferA
           liftIO $ threadDelay maxBound
 
   liftIO . void $ bracket makeSharedMemoryObject removeSharedMemoryObject useSharedMemoryObject
+
+putImage :: Handle -> Image PixelRGBA8 -> WhichBuffer -> Wayland ()
+putImage fileHandle image whichBuffer = do
+  tracker <- readIORef =<< asks (.tracker)
+  let buffer = fromJust $ case whichBuffer of
+        BufferA -> tracker.wl_buffer_A
+        BufferB -> tracker.wl_buffer_B
+  liftIO . hSeek fileHandle AbsoluteSeek $ fromIntegral buffer.offset
+  liftIO . hPut fileHandle $ swizzleRGBAtoBGRA image
+  wlSurface_damageBuffer 0 0 bufferWidth bufferHeight
+  wlSurface_attach buffer.id
+  wlSurface_commit
