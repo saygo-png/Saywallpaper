@@ -18,7 +18,7 @@ import Events
 import GHC.IO.Handle
 import Graphics.Rasterific
 import Graphics.Rasterific.Texture
-import Graphics.Text.TrueType (loadFontFile)
+import Graphics.Text.TrueType (Font, loadFontFile)
 import Headers
 import Network.Socket
 import Relude hiding (ByteString, get, isPrefixOf, put)
@@ -110,11 +110,16 @@ handleEventResponse _ = return ()
 
 getBarState :: IO BarState
 getBarState = do
-  (dateOut, dateErr) <- readProcess_ "date"
+  (dateOut, _dateErr) <- readProcess_ "date"
   pure . BarState $ decodeUtf8 dateOut
 
-renderBarState :: BarState -> Image PixelRGBA8
-renderBarState = undefined
+renderBarState :: Font -> BarState -> Image PixelRGBA8
+renderBarState font barState = do
+  let bgColor = PixelRGBA8 0 0 0 0
+      drawColor = PixelRGBA8 213 196 161 255 -- #d5c4a1
+  renderDrawing (fromIntegral bufferWidth) (fromIntegral bufferHeight) bgColor $ do
+    withTexture (uniformTexture drawColor) $ do
+      printTextAt font (PointSize 12) (V2 20 15) $ toString barState.date
 
 main :: IO ()
 main = runReaderT program =<< waylandSetup
@@ -169,18 +174,6 @@ program = do
   zwlrLayerSurfaceV1_ackConfigure
 
   font <- either (error . toText) pure =<< liftIO (loadFontFile "CourierPrime-Regular.ttf")
-  let bgColor = PixelRGBA8 0 0 0 0
-      drawColor = PixelRGBA8 213 196 161 255 -- #d5c4a1
-      img = renderDrawing (fromIntegral bufferWidth) (fromIntegral bufferHeight) bgColor $ do
-        withTexture (uniformTexture drawColor) $ do
-          printTextAt font (PointSize 12) (V2 20 15) "date: 2026-02-18 21:13. internet: connected. tray: steam and discord open. Data last updated at compile time with my keyboard"
-      img2 = renderDrawing (fromIntegral bufferWidth) (fromIntegral bufferHeight) bgColor $ do
-        withTexture (uniformTexture drawColor) $ do
-          printTextAt font (PointSize 12) (V2 20 15) "foobar"
-
-      img3 = renderDrawing (fromIntegral bufferWidth) (fromIntegral bufferHeight) bgColor $ do
-        withTexture (uniformTexture drawColor) $ do
-          printTextAt font (PointSize 12) (V2 20 15) "foobar 3"
 
   let makeSharedMemoryObject = shmOpen poolName (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
       removeSharedMemoryObject _ = shmUnlink poolName
@@ -195,14 +188,16 @@ program = do
 
           file_handle <- liftIO $ fdToHandle fileDescriptor
 
-          putImage file_handle img BufferA
-          liftIO $ threadDelay 1000000
+          let renderLoop = do
+                img <- renderBarState font <$> liftIO getBarState
+                putImage file_handle img BufferA
+                liftIO $ threadDelay 1000000
 
-          putImage file_handle img2 BufferB
-          liftIO $ threadDelay 1000000
-
-          putImage file_handle img3 BufferA
-          liftIO $ threadDelay maxBound
+                img2 <- renderBarState font <$> liftIO getBarState
+                putImage file_handle img2 BufferB
+                liftIO $ threadDelay 1000000
+                renderLoop
+          renderLoop
 
   liftIO . void $ bracket makeSharedMemoryObject removeSharedMemoryObject useSharedMemoryObject
 
