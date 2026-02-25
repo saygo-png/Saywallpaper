@@ -7,11 +7,6 @@ import Relude hiding (ByteString, get, isPrefixOf, length, put, replicate)
 
 type Wayland = ReaderT WaylandEnv IO
 
-data BarState = BarState
-  { date :: Text
-  }
-  deriving stock (Show)
-
 data WaylandEnv = WaylandEnv
   { tracker :: IORef ObjectTracker
   , socket :: Socket
@@ -22,6 +17,11 @@ data WaylandEnv = WaylandEnv
   , zwlr_layer_shell_v1ID :: Word32
   , parseEvents :: ObjectTracker -> Get [WaylandEvent]
   }
+
+data BarState = BarState
+  { date :: Text
+  }
+  deriving stock (Show)
 
 data WhichBuffer = BufferA | BufferB
 
