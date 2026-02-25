@@ -92,9 +92,9 @@ eventLoop = do
 
 handleEventResponse :: WaylandEvent -> Wayland ()
 handleEventResponse (Event _ e) = do
-  tracker <- asks (.tracker)
+  tracker <- readIORef =<< asks (.tracker)
   whenJust (cast e) $ \(ev :: EventWlrLayerSurfaceConfigure) ->
-    modifyIORef' tracker (\t -> t{zwlr_layer_surface_v1Serial = Just ev.serial})
+    atomically $ putTMVar tracker.zwlr_layer_surface_v1Serial ev.serial
 handleEventResponse _ = return ()
 
 main :: IO ()
@@ -106,7 +106,8 @@ waylandSetup = do
   counter <- newIORef 2 -- start from 2 because wl_display is always 1
   registry <- wlDisplay_getRegistry sock counter
   socketData <- receiveSocketData sock
-  tracker <- newIORef (ObjectTracker Nothing Nothing Nothing Nothing Nothing)
+  tracker <- newIORef . ObjectTracker Nothing Nothing Nothing Nothing =<< newEmptyTMVarIO
+
   initialEvents <- runGet . parseEvents registry Nothing <$> readIORef tracker <*> pure socketData
   mapM_ displayEvent initialEvents
   let globals = [(h, g) | ev <- initialEvents, Event h e <- [ev], Just g <- [cast e :: Maybe EventGlobal]]
@@ -154,7 +155,6 @@ program = do
   zwlrLayerSurfaceV1_setSize 0 bufferHeight
   zwlrLayerSurfaceV1_setExclusiveZone (fromIntegral bufferHeight)
   wlSurface_commit
-  liftIO $ threadDelay 100000 -- FIX: use stm
   zwlrLayerSurfaceV1_ackConfigure
 
   font <- either (error . toText) pure =<< liftIO (loadFontFile "CourierPrime-Regular.ttf")

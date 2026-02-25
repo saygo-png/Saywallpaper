@@ -111,8 +111,8 @@ zwlrLayerSurfaceV1_ackConfigure :: Wayland ()
 zwlrLayerSurfaceV1_ackConfigure = do
   env <- ask
   tracker <- readIORef env.tracker
+  zwlr_layer_surface_v1Serial <- atomically $ takeTMVar tracker.zwlr_layer_surface_v1Serial
   let zwlr_layer_surface_v1ID = fromJust tracker.zwlr_layer_surface_v1ID
-      zwlr_layer_surface_v1Serial = fromJust tracker.zwlr_layer_surface_v1Serial
 
   let messageBody = runPut $ do putWord32le zwlr_layer_surface_v1Serial
   liftIO . sendAll env.socket $ mkMessage zwlr_layer_surface_v1ID 6 messageBody
