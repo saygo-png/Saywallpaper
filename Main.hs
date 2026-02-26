@@ -106,12 +106,17 @@ handleEventResponse (Event _ e) = do
   tracker <- readIORef =<< asks (.tracker)
   whenJust (cast e) $ \(ev :: EventWlrLayerSurfaceConfigure) ->
     atomically $ putTMVar tracker.zwlr_layer_surface_v1Serial ev.serial
+handleEventResponse (EvEmpty _ e) = do
+  whenJust (cast e) $ \(_ev :: EventBufferRelease) -> do
+    freeBuffer <- asks (.freeBuffer)
+    takeMVar freeBuffer
 handleEventResponse _ = return ()
 
 getBarState :: IO BarState
 getBarState = do
   (dateOut, _dateErr) <- readProcess_ "date"
-  pure . BarState $ decodeUtf8 dateOut
+  let dateFinal = BSL.reverse . BSL.drop 1 $ BSL.reverse dateOut
+  pure . BarState $ decodeUtf8 dateFinal
 
 renderBarState :: Font -> BarState -> Image PixelRGBA8
 renderBarState font barState = do
@@ -119,7 +124,7 @@ renderBarState font barState = do
       drawColor = PixelRGBA8 213 196 161 255 -- #d5c4a1
   renderDrawing (fromIntegral bufferWidth) (fromIntegral bufferHeight) bgColor $ do
     withTexture (uniformTexture drawColor) $ do
-      printTextAt font (PointSize 12) (V2 20 15) $ toString barState.date
+      printTextAt font (PointSize 11) (V2 20 15) $ toString barState.date
 
 main :: IO ()
 main = runReaderT program =<< waylandSetup
@@ -128,6 +133,7 @@ waylandSetup :: IO WaylandEnv
 waylandSetup = do
   sock <- wlDisplayConnect
   counter <- newIORef 2 -- start from 2 because wl_display is always 1
+  freeBuffer <- newEmptyMVar
   registry <- wlDisplay_getRegistry sock counter
   socketData <- receiveSocketData sock
   tracker <- newIORef . ObjectTracker Nothing Nothing Nothing Nothing Nothing =<< newEmptyTMVarIO
@@ -148,6 +154,7 @@ waylandSetup = do
       tracker
       sock
       counter
+      freeBuffer
       registry
       wl_shm
       wl_compositor
@@ -191,11 +198,9 @@ program = do
           let renderLoop = do
                 img <- renderBarState font <$> liftIO getBarState
                 putImage file_handle img BufferA
-                liftIO $ threadDelay 1000000
 
                 img2 <- renderBarState font <$> liftIO getBarState
                 putImage file_handle img2 BufferB
-                liftIO $ threadDelay 1000000
                 renderLoop
           renderLoop
 
@@ -203,6 +208,7 @@ program = do
 
 putImage :: Handle -> Image PixelRGBA8 -> WhichBuffer -> Wayland ()
 putImage fileHandle image whichBuffer = do
+  freeBuffer <- asks (.freeBuffer)
   tracker <- readIORef =<< asks (.tracker)
   let buffer = fromJust $ case whichBuffer of
         BufferA -> tracker.wl_buffer_A
@@ -212,3 +218,5 @@ putImage fileHandle image whichBuffer = do
   wlSurface_damageBuffer 0 0 bufferWidth bufferHeight
   wlSurface_attach buffer.id
   wlSurface_commit
+  liftIO $ threadDelay 5000000
+  putMVar freeBuffer ()

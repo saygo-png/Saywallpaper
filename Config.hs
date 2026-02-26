@@ -6,7 +6,7 @@ bufferWidth :: Word32
 bufferWidth = 1920
 
 bufferHeight :: Word32
-bufferHeight = 25
+bufferHeight = 20
 
 poolName :: String
 poolName = "saybar-shared-pool"

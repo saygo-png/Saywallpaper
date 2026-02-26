@@ -11,6 +11,7 @@ data WaylandEnv = WaylandEnv
   { tracker :: IORef ObjectTracker
   , socket :: Socket
   , counter :: IORef Word32
+  , freeBuffer :: MVar ()
   , registryID :: Word32
   , wl_shmID :: Word32
   , wl_compositorID :: Word32
@@ -41,7 +42,7 @@ data ObjectTracker = ObjectTracker
 
 data WaylandEvent where
   Event :: (Binary a, WaylandEventType a, Typeable a) => Header -> a -> WaylandEvent
-  EvEmpty :: (WaylandEventType a) => Header -> a -> WaylandEvent
+  EvEmpty :: (WaylandEventType a, Typeable a) => Header -> a -> WaylandEvent
   EvUnknown :: Header -> WaylandEvent
 
 -- Type class for events that can describe themselves
