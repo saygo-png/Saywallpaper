@@ -101,7 +101,12 @@ handleEventResponse (Event _ e) = do
 handleEventResponse _ = return ()
 
 main :: IO ()
-main = runReaderT program =<< waylandSetup
+main = do
+  wallpaperPath <-
+    getArgs >>= \case
+      "-i" : p : _ -> pure p
+      _ -> putStrLn "Provide a path to the image as an argument using \"-i <path>\"" >> exitFailure
+  runReaderT (program wallpaperPath) =<< waylandSetup
 
 waylandSetup :: IO WaylandEnv
 waylandSetup = do
@@ -133,8 +138,8 @@ waylandSetup = do
       zwlr_layer_shell_v1
       eventParser
 
-program :: Wayland ()
-program = do
+program :: FilePath -> Wayland ()
+program wallpaperPath = do
   env <- ask
 
   liftIO
@@ -163,7 +168,7 @@ program = do
 
           fileHandle <- liftIO $ fdToHandle fileDescriptor
 
-          img <- liftIO $ BSL.readFile "wallpaper.raw"
+          img <- liftIO $ BSL.readFile wallpaperPath
           t <- readIORef env.tracker
           let bufferID = fromJust t.wl_buffer_A
           liftIO $ hPut fileHandle img
