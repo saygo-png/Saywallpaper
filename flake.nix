@@ -33,7 +33,7 @@
     packages = eachSystem (system: pkgs: let
       program = pkgs.callPackage ./package.nix {niceHaskell = niceHaskell.outputs.niceHaskell.${system};};
     in {
-      "saybar" = program;
+      "saywallpaper" = program;
       default = program;
     });
 
