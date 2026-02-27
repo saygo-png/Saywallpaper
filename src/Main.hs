@@ -2,8 +2,6 @@
 
 module Main (main) where
 
-import Codec.Picture (PixelRGBA8 (..), convertRGBA8, readImage)
-import Codec.Picture.Types (Image)
 import Config
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Exception
@@ -147,7 +145,7 @@ program = do
       (close env.socket)
 
   wlCompositor_createSurface $ \t objectID -> t{wl_surfaceID = objectID}
-  zwlrLayerShellV1_getLayerSurface (\t objectID -> t{zwlr_layer_surface_v1ID = objectID}) 0 "saywallpaper"
+  zwlrLayerShellV1_getLayerSurface (\t objectID -> t{zwlr_layer_surface_v1ID = objectID}) 0 "wallpaper"
   zwlrLayerSurfaceV1_setSize bufferWidth bufferHeight
   zwlrLayerSurfaceV1_setExclusiveZone (-1)
   wlSurface_commit
@@ -165,14 +163,10 @@ program = do
 
           fileHandle <- liftIO $ fdToHandle fileDescriptor
 
-          eitherPngImg <- liftIO $ readImage "wallpaper.png"
-          pngImg <- case eitherPngImg of
-            Left e -> error $ fromString e
-            Right i -> pure i
-          let img = convertRGBA8 pngImg
+          img <- liftIO $ BSL.readFile "wallpaper.raw"
           t <- readIORef env.tracker
           let bufferID = fromJust t.wl_buffer_A
-          liftIO . hPut fileHandle $ swizzleRGBAtoBGRA img
+          liftIO $ hPut fileHandle img
           wlSurface_attach bufferID
           wlSurface_commit
           liftIO $ threadDelay maxBound

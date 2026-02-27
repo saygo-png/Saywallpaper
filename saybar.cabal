@@ -7,7 +7,7 @@ maintainer:      saygo-png <saygo.mail@proton.me>
 copyright:       2024 saygo-png
 
 common common-options
-  build-depends:    base >=4.7 && <5, relude, bytestring, binary, network, unix, JuicyPixels, vector, ansi-terminal
+  build-depends:    base >=4.7 && <5, relude, bytestring, binary, network, unix, ansi-terminal
   default-language: GHC2021
   ghc-options: -Weverything -Wno-missed-extra-shared-lib -Wno-missing-kind-signatures -Wno-safe -Wno-unsafe -Wno-missing-import-lists -Wno-all-missed-specialisations -Wno-missed-specialisations -Wno-missing-safe-haskell-mode -Wno-missing-exported-signatures -Wno-missing-local-signatures
                -threaded -rtsopts -with-rtsopts=-N

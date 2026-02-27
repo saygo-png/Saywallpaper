@@ -1,12 +1,10 @@
-module Utils (swizzleRGBAtoBGRA, padLen, putWlString, getWlString, nextID, nextID', mkMessage, wlDisplayID, waylandNull, headerSize, receiveSocketData, strReq) where
+module Utils (padLen, putWlString, getWlString, nextID, nextID', mkMessage, wlDisplayID, waylandNull, headerSize, receiveSocketData, strReq) where
 
-import Codec.Picture (Image (imageData), PixelRGBA8 (..))
 import Data.Binary
 import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits
 import Data.ByteString.Lazy
-import Data.Vector.Storable qualified as VS
 import Network.Socket
 import Network.Socket.ByteString.Lazy (recv)
 import Relude hiding (ByteString, get, isPrefixOf, length, put, replicate)
@@ -59,16 +57,6 @@ nextID' counter = do
 
 nextID :: IORef Word32 -> Wayland Word32
 nextID = liftIO . nextID'
-
-swizzleRGBAtoBGRA :: Image PixelRGBA8 -> ByteString
-swizzleRGBAtoBGRA image =
-  pack . go . VS.toList $ imageData image
-  where
-    go [] = []
-    go (r : g : b : a : rest) =
-      let premul c = fromIntegral (fromIntegral c * fromIntegral a `div` 255 :: Word16)
-       in premul b : premul g : premul r : a : go rest
-    go _ = []
 
 putWlString :: ByteString -> Put
 putWlString bs = do
