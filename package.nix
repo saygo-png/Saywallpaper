@@ -5,6 +5,6 @@
 niceHaskell.mkPackage {
   flags = niceHaskell.mkFlags {doCheck = false;};
   packageRoot = ./.;
-  cabalName = "saybar";
+  cabalName = "saywallpaper";
   compiler = "ghc912";
 }
