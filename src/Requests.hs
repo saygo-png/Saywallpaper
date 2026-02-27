@@ -148,7 +148,7 @@ zwlrLayerSurfaceV1_setExclusiveZone zone = do
   let sender = ("zwlr_layer_surface_v1", zwlr_layer_surface_v1ID, "set_exclusive_zone")
   liftIO . strReq sender $ printf "zone=%i" zone
 
-wlShmPool_createBuffer :: (ObjectTracker -> Maybe Buffer -> ObjectTracker) -> Word32 -> Wayland ()
+wlShmPool_createBuffer :: (ObjectTracker -> Maybe Word32 -> ObjectTracker) -> Word32 -> Wayland ()
 wlShmPool_createBuffer updateFn offset = do
   env <- ask
   tracker <- readIORef env.tracker
@@ -166,7 +166,7 @@ wlShmPool_createBuffer updateFn offset = do
 
   let sender = ("wl_shm_pool", wl_shm_poolID, "create_buffer")
   liftIO . strReq sender $ printf "newID=%i" newObjectID
-  modifyIORef' env.tracker $ \t -> updateFn t (Just $ Buffer newObjectID offset)
+  modifyIORef' env.tracker $ \t -> updateFn t (Just newObjectID)
 
 wlRegistry_bind :: Socket -> Word32 -> Word32 -> ByteString -> Word32 -> Word32 -> IO Word32
 wlRegistry_bind sock registryID globalName interfaceName interfaceVersion newObjectID = do
