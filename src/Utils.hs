@@ -8,7 +8,6 @@ import Data.ByteString.Lazy
 import Network.Socket
 import Network.Socket.ByteString.Lazy (recv)
 import Relude hiding (ByteString, get, isPrefixOf, length, put, replicate)
-import System.Console.ANSI
 import Text.Printf
 import Types
 
@@ -24,18 +23,9 @@ wlDisplayID = 1 -- wlDisplay always has ID 1 in Wayland
 padLen :: Word32 -> Int64
 padLen l = (.&.) (fromIntegral l + 3) (-4)
 
-getColorize :: (IsString s, Semigroup s) => IO (ColorIntensity -> Color -> s -> s)
-getColorize = do
-  ansiSupport <- hNowSupportsANSI stdout
-  pure
-    $ if ansiSupport
-      then \ci c t -> fromString (setSGRCode [SetColor Foreground ci c]) <> t <> fromString (setSGRCode [Reset])
-      else const $ const id
-
 strReq :: (String, Word32, String) -> String -> IO ()
 strReq (object, objectID, method) text = do
-  colorize <- getColorize
-  putStrLn . colorize Vivid Magenta $ printf ("-> %s@%i.%s: " <> text) object objectID method
+  putStrLn $ printf ("-------> %s@%i.%s: " <> text) object objectID method
 
 mkMessage :: Word32 -> Word16 -> ByteString -> ByteString
 mkMessage objectID opCode messageBody =
