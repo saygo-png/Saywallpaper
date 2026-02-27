@@ -6,9 +6,11 @@ It tells Wayland to interpret the binary file as Wayland's "argb8888" format.
 == Usage
 
 You can use imagemagick to convert most images into this format.
+
 `magick wallpaper.png -depth 8 bgra:wallpaper.raw`
 
 Provide the image to Saywallpaper using the `-i` flag.
+
 `saywallpaper -i wallpaper.raw`
 
 The image is assumed to be width 1920, height 1080 by default.
@@ -28,4 +30,6 @@ Only tested on Linux (NixOS), but I think it *should* work on all POSIX platform
 
 == Building
 
-You can build with Nix flakes using `nix build` or using Cabal with `cabal build`.
+Build with Nix flakes: `nix build`
+
+Build using Cabal: `cabal build`
