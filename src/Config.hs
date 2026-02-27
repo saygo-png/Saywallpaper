@@ -6,10 +6,10 @@ bufferWidth :: Word32
 bufferWidth = 1920
 
 bufferHeight :: Word32
-bufferHeight = 20
+bufferHeight = 1080
 
 poolName :: String
-poolName = "saybar-shared-pool"
+poolName = "saywallpaper-shared-pool"
 
 colorFormat :: Word32
 colorFormat = 0 -- ARGB8888

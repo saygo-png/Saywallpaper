@@ -2,7 +2,7 @@
 
 module Main (main) where
 
-import Codec.Picture (PixelRGBA8 (..))
+import Codec.Picture (PixelRGBA8 (..), convertRGBA8, readImage)
 import Codec.Picture.Types (Image)
 import Config
 import Control.Concurrent (forkIO, threadDelay)
@@ -15,10 +15,6 @@ import Data.ByteString.Lazy.Internal qualified as BSL
 import Data.Maybe (fromJust)
 import Data.Typeable
 import Events
-import GHC.IO.Handle
-import Graphics.Rasterific
-import Graphics.Rasterific.Texture
-import Graphics.Text.TrueType (Font, loadFontFile)
 import Headers
 import Network.Socket
 import Relude hiding (ByteString, get, isPrefixOf, put)
@@ -27,7 +23,6 @@ import System.Environment (getEnv)
 import System.Posix (ownerReadMode, ownerWriteMode, setFdSize, unionFileModes)
 import System.Posix.IO
 import System.Posix.SharedMem
-import System.Process.Typed
 import Types
 import Utils
 
@@ -56,15 +51,14 @@ parseEvent registryID wl_shmID tracker = do
     | maybeMatchEvent' wl_shmID 0 -> ev (get @EventShmFormat)
     | maybeMatchEvent' tracker.zwlr_layer_surface_v1ID 0 -> ev (get @EventWlrLayerSurfaceConfigure)
     | matchBufferEvent header tracker.wl_buffer_A 0 -> pure $ EvEmpty header EventBufferRelease
-    | matchBufferEvent header tracker.wl_buffer_B 0 -> pure $ EvEmpty header EventBufferRelease
     | otherwise -> skip bodySize $> EvUnknown header
   where
     maybeMatchEvent :: Header -> Maybe Word32 -> Word16 -> Bool
     maybeMatchEvent header (Just oid) opcode = matchEvent header oid opcode
     maybeMatchEvent _ Nothing _ = False
 
-    matchBufferEvent :: Header -> Maybe Buffer -> Word16 -> Bool
-    matchBufferEvent header (Just buffer) opcode = matchEvent header buffer.id opcode
+    matchBufferEvent :: Header -> Maybe Word32 -> Word16 -> Bool
+    matchBufferEvent header (Just bufferID) opcode = matchEvent header bufferID opcode
     matchBufferEvent _ Nothing _ = False
 
     matchEvent :: Header -> Word32 -> Word16 -> Bool
@@ -106,25 +100,7 @@ handleEventResponse (Event _ e) = do
   tracker <- readIORef =<< asks (.tracker)
   whenJust (cast e) $ \(ev :: EventWlrLayerSurfaceConfigure) ->
     atomically $ putTMVar tracker.zwlr_layer_surface_v1Serial ev.serial
-handleEventResponse (EvEmpty _ e) = do
-  whenJust (cast e) $ \(_ev :: EventBufferRelease) -> do
-    freeBuffer <- asks (.freeBuffer)
-    takeMVar freeBuffer
 handleEventResponse _ = return ()
-
-getBarState :: IO BarState
-getBarState = do
-  (dateOut, _dateErr) <- readProcess_ "date"
-  let dateFinal = BSL.reverse . BSL.drop 1 $ BSL.reverse dateOut
-  pure . BarState $ decodeUtf8 dateFinal
-
-renderBarState :: Font -> BarState -> Image PixelRGBA8
-renderBarState font barState = do
-  let bgColor = PixelRGBA8 0 0 0 0
-      drawColor = PixelRGBA8 213 196 161 255 -- #d5c4a1
-  renderDrawing (fromIntegral bufferWidth) (fromIntegral bufferHeight) bgColor $ do
-    withTexture (uniformTexture drawColor) $ do
-      printTextAt font (PointSize 11) (V2 20 15) $ toString barState.date
 
 main :: IO ()
 main = runReaderT program =<< waylandSetup
@@ -133,10 +109,9 @@ waylandSetup :: IO WaylandEnv
 waylandSetup = do
   sock <- wlDisplayConnect
   counter <- newIORef 2 -- start from 2 because wl_display is always 1
-  freeBuffer <- newEmptyMVar
   registry <- wlDisplay_getRegistry sock counter
   socketData <- receiveSocketData sock
-  tracker <- newIORef . ObjectTracker Nothing Nothing Nothing Nothing Nothing =<< newEmptyTMVarIO
+  tracker <- newIORef . ObjectTracker Nothing Nothing Nothing Nothing =<< newEmptyTMVarIO
 
   initialEvents <- runGet . parseEvents registry Nothing <$> readIORef tracker <*> pure socketData
   mapM_ displayEvent initialEvents
@@ -154,7 +129,6 @@ waylandSetup = do
       tracker
       sock
       counter
-      freeBuffer
       registry
       wl_shm
       wl_compositor
@@ -173,50 +147,34 @@ program = do
       (close env.socket)
 
   wlCompositor_createSurface $ \t objectID -> t{wl_surfaceID = objectID}
-  zwlrLayerShellV1_getLayerSurface (\t objectID -> t{zwlr_layer_surface_v1ID = objectID}) 2 "saybar"
-  zwlrLayerSurfaceV1_setAnchor 13 -- top left right anchors
-  zwlrLayerSurfaceV1_setSize 0 bufferHeight
-  zwlrLayerSurfaceV1_setExclusiveZone (fromIntegral bufferHeight)
+  zwlrLayerShellV1_getLayerSurface (\t objectID -> t{zwlr_layer_surface_v1ID = objectID}) 0 "saywallpaper"
+  zwlrLayerSurfaceV1_setSize bufferWidth bufferHeight
+  zwlrLayerSurfaceV1_setExclusiveZone (-1)
   wlSurface_commit
   zwlrLayerSurfaceV1_ackConfigure
-
-  font <- either (error . toText) pure =<< liftIO (loadFontFile "CourierPrime-Regular.ttf")
 
   let makeSharedMemoryObject = shmOpen poolName (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
       removeSharedMemoryObject _ = shmUnlink poolName
       useSharedMemoryObject fileDescriptor =
         flip runReaderT env $ do
           let frameSize = bufferWidth * bufferHeight * colorChannels
-          let poolSize = 2 * frameSize -- 2x for double buffering
+          let poolSize = frameSize
           liftIO . setFdSize fileDescriptor $ fromIntegral poolSize
           wlShm_createPool (\t objectID -> t{wl_shm_poolID = objectID}) poolSize fileDescriptor
           wlShmPool_createBuffer (\t buffer -> t{wl_buffer_A = buffer}) 0
-          wlShmPool_createBuffer (\t buffer -> t{wl_buffer_B = buffer}) frameSize
 
-          file_handle <- liftIO $ fdToHandle fileDescriptor
+          fileHandle <- liftIO $ fdToHandle fileDescriptor
 
-          let renderLoop = do
-                img <- renderBarState font <$> liftIO getBarState
-                putImage file_handle img BufferA
-
-                img2 <- renderBarState font <$> liftIO getBarState
-                putImage file_handle img2 BufferB
-                renderLoop
-          renderLoop
+          eitherPngImg <- liftIO $ readImage "wallpaper.png"
+          pngImg <- case eitherPngImg of
+            Left e -> error $ fromString e
+            Right i -> pure i
+          let img = convertRGBA8 pngImg
+          t <- readIORef env.tracker
+          let bufferID = fromJust t.wl_buffer_A
+          liftIO . hPut fileHandle $ swizzleRGBAtoBGRA img
+          wlSurface_attach bufferID
+          wlSurface_commit
+          liftIO $ threadDelay maxBound
 
   liftIO . void $ bracket makeSharedMemoryObject removeSharedMemoryObject useSharedMemoryObject
-
-putImage :: Handle -> Image PixelRGBA8 -> WhichBuffer -> Wayland ()
-putImage fileHandle image whichBuffer = do
-  freeBuffer <- asks (.freeBuffer)
-  tracker <- readIORef =<< asks (.tracker)
-  let buffer = fromJust $ case whichBuffer of
-        BufferA -> tracker.wl_buffer_A
-        BufferB -> tracker.wl_buffer_B
-  liftIO . hSeek fileHandle AbsoluteSeek $ fromIntegral buffer.offset
-  liftIO . hPut fileHandle $ swizzleRGBAtoBGRA image
-  wlSurface_damageBuffer 0 0 bufferWidth bufferHeight
-  wlSurface_attach buffer.id
-  wlSurface_commit
-  liftIO $ threadDelay 5000000
-  putMVar freeBuffer ()
