@@ -33,7 +33,7 @@
       default = program;
     });
 
-    formatter = eachSystem (system: pkgs: (treefmt-nix.lib.evalModule pkgs ./treefmt.nix).${system}.config.build.wrapper);
+    formatter = eachSystem (_system: pkgs: (treefmt-nix.lib.evalModule pkgs ./treefmt.nix).config.build.wrapper);
 
     devShells = eachSystem (_system: pkgs: {
       default = pkgs.mkShell {
