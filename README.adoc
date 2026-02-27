@@ -1,0 +1,31 @@
+= Saywallpaper
+
+Minimalist Wayland wallpaper daemon in Haskell without libwayland. It allows displaying any binary file because it's fun.
+It tells Wayland to interpret the binary file as Wayland's "argb8888" format.
+
+== Usage
+
+You can use imagemagick to convert most images into this format.
+`magick wallpaper.png -depth 8 bgra:wallpaper.raw`
+
+Provide the image to Saywallpaper using the `-i` flag.
+`saywallpaper -i wallpaper.raw`
+
+The image is assumed to be width 1920, height 1080 by default.
+
+== Configuration
+
+This program is configured in source code.
+Notably it has a hardcoded image resolution of 1920x1080.
+Options you might want to change are in `Config.hs`
+
+== Notes
+
+I'm not planning to make this project fully featured. For example I'm not gonna deal with fractional scaling.
+If you need that, use swaybg instead.
+
+Only tested on Linux (NixOS), but I think it *should* work on all POSIX platforms.
+
+== Building
+
+You can build with Nix flakes using `nix build` or using Cabal with `cabal build`.
