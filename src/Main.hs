@@ -3,7 +3,7 @@
 module Main (main) where
 
 import Config
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO)
 import Control.Exception
 import Data.Binary
 import Data.Binary.Get
@@ -141,13 +141,14 @@ waylandSetup = do
 program :: FilePath -> Wayland ()
 program wallpaperPath = do
   env <- ask
+  running <- newEmptyMVar
 
   liftIO
     . void
     . forkIO
     $ finally
       (putStrLn "\n--- Starting event loop ---" >> runReaderT eventLoop env)
-      (close env.socket)
+      (close env.socket >> putMVar running ())
 
   wlCompositor_createSurface $ \t objectID -> t{wl_surfaceID = objectID}
   zwlrLayerShellV1_getLayerSurface (\t objectID -> t{zwlr_layer_surface_v1ID = objectID}) 0 "wallpaper"
@@ -168,12 +169,12 @@ program wallpaperPath = do
 
           fileHandle <- liftIO $ fdToHandle fileDescriptor
 
-          img <- liftIO $ BSL.readFile wallpaperPath
-          t <- readIORef env.tracker
-          let bufferID = fromJust t.wl_buffer_A
-          liftIO $ hPut fileHandle img
+          liftIO $ hPut fileHandle =<< BSL.readFile wallpaperPath
+          bufferID <- fromJust . (.wl_buffer_A) <$> readIORef env.tracker
           wlSurface_attach bufferID
           wlSurface_commit
-          liftIO $ threadDelay maxBound
+
+          -- Wait for exit
+          takeMVar running
 
   liftIO . void $ bracket makeSharedMemoryObject removeSharedMemoryObject useSharedMemoryObject
