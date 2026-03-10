@@ -28,6 +28,9 @@ If you need that, use swaybg instead.
 
 Only tested on Linux (NixOS), but I think it *should* work on all POSIX platforms.
 
+There is an older version of this project under the "pre-saywaylandlib" branch.
+It doesn't use a Wayland library and thus might be more helpful as an example for a basic Wayland client.
+
 == Building
 
 Build with Nix flakes: `nix build`
