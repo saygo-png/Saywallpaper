@@ -62,8 +62,38 @@
       "inputs": {
         "niceHaskell": "niceHaskell",
         "nixpkgs": "nixpkgs",
+        "saywayland": "saywayland",
         "systems": "systems",
         "treefmt-nix": "treefmt-nix"
+      }
+    },
+    "saywayland": {
+      "inputs": {
+        "niceHaskell": [
+          "niceHaskell"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "systems": [
+          "systems"
+        ],
+        "treefmt-nix": [
+          "treefmt-nix"
+        ]
+      },
+      "locked": {
+        "lastModified": 1773149927,
+        "narHash": "sha256-7l8rP4UwaXBwhxq9t3APWc1WuSCgG2u7nJfxqHFpF5s=",
+        "owner": "saygo-png",
+        "repo": "saywayland",
+        "rev": "ec29b5b0d42a54fdf8ce1f5d0abfcb666efe54ee",
+        "type": "github"
+      },
+      "original": {
+        "owner": "saygo-png",
+        "repo": "saywayland",
+        "type": "github"
       }
     },
     "systems": {

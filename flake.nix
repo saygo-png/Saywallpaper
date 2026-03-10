@@ -10,6 +10,15 @@
         treefmt-nix.follows = "treefmt-nix";
       };
     };
+    saywayland = {
+      url = "github:saygo-png/saywayland";
+      inputs = {
+        treefmt-nix.follows = "treefmt-nix";
+        nixpkgs.follows = "nixpkgs";
+        systems.follows = "systems";
+        niceHaskell.follows = "niceHaskell";
+      };
+    };
     systems = {
       url = "path:./systems.nix";
       flake = false;
@@ -19,6 +28,7 @@
   outputs = {
     nixpkgs,
     systems,
+    saywayland,
     niceHaskell,
     treefmt-nix,
     ...
@@ -27,7 +37,10 @@
     eachSystem = f: nixpkgs.lib.genAttrs (import systems) (system: f system pkgsFor.${system});
   in {
     packages = eachSystem (system: pkgs: let
-      program = pkgs.callPackage ./package.nix {niceHaskell = niceHaskell.outputs.niceHaskell.${system};};
+      program = pkgs.callPackage ./package.nix {
+        niceHaskell = niceHaskell.outputs.niceHaskell.${system};
+        inherit (saywayland.packages.${system}) saywayland;
+      };
     in {
       "saywallpaper" = program;
       default = program;
