@@ -3,17 +3,17 @@ module Config (colorChannels, bufferWidth, bufferHeight, poolName, colorFormat) 
 import Relude
 import Saywayland
 
-bufferWidth :: WlInt
+bufferWidth :: Int
 bufferWidth = 1920
 
-bufferHeight :: WlInt
+bufferHeight :: Int
 bufferHeight = 1080
 
 poolName :: String
 poolName = "saywallpaper-shared-pool"
 
-colorFormat :: WlColorFormat
-colorFormat = Argb8888
+colorFormat :: Enum_wl_shm_format
+colorFormat = Enum_wl_shm_format_argb8888
 
-colorChannels :: WlInt
+colorChannels :: Int
 colorChannels = 4
