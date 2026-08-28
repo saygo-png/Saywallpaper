@@ -4,12 +4,12 @@ module Main (main) where
 
 import Config
 import Control.Concurrent (forkIO)
-import Control.Concurrent.MVar (isEmptyMVar)
-import Control.Concurrent.STM (newTQueue)
+import Control.Concurrent.STM (newTQueue, retry, stateTVar)
 import Control.Exception
 import Data.Bimap qualified as BM
 import Data.ByteString.Lazy
 import Data.ByteString.Lazy qualified as BSL
+import Data.Set qualified as Set
 import Network.Socket hiding (openSocket)
 import Relude hiding (ByteString, get, isPrefixOf, put)
 import Relude.Unsafe qualified as Unsafe
@@ -23,6 +23,27 @@ interfaceTable = waylandInterfaceClientTable <> wlr_layer_shell_unstable_v1Inter
 
 versionTable :: VersionTable
 versionTable = waylandVersionTable <> wlr_layer_shell_unstable_v1VersionTable
+
+data LayerPhase
+  = Idle
+  | AwaitingConfigure Zwlr_layer_surface_v1
+  | LayerConfigured Zwlr_layer_surface_v1
+
+phaseSurface :: LayerPhase -> Maybe Zwlr_layer_surface_v1
+phaseSurface Idle = Nothing
+phaseSurface (AwaitingConfigure s) = Just s
+phaseSurface (LayerConfigured s) = Just s
+
+-- | Shared state between threads
+data SurfaceStates = SurfaceStates
+  { outputNames :: Set Word32
+  , layerPhase :: LayerPhase
+  , pendingBuffer :: Maybe Wl_buffer
+  , bufferAttached :: Bool
+  }
+
+hasAnyOutput :: SurfaceStates -> Bool
+hasAnyOutput = not . Set.null . (.outputNames)
 
 main :: IO ()
 main = do
@@ -48,12 +69,16 @@ main = do
 program :: FilePath -> Wayland Client ()
 program wallpaperPath = do
   ClientEnv env <- ask
-  serial :: TMVar Word32 <- newEmptyTMVarIO
-  running :: MVar () <- newEmptyMVar
-  let display :: Wl_display = Wl_display $ TObjectID wlDisplayID
+  running <- newEmptyMVar
+  stateVar <- liftIO . newTVarIO $ SurfaceStates{outputNames = Set.empty, layerPhase = Idle, pendingBuffer = Nothing, bufferAttached = False}
+
+  -- Runs an STM transition against the shared state, then performs
+  -- whatever side effect that transition decided on.
+  let transact :: State SurfaceStates (Wayland Client ()) -> Wayland Client ()
+      transact action = join . liftIO . atomically $ stateTVar stateVar (runState action)
 
   registryId <- TObjectID <$> newObjectId
-  runRequest display $ Request_wl_display_get_registry registryId
+  runRequest (Wl_display $ TObjectID wlDisplayID) $ Request_wl_display_get_registry registryId
   registry <- Unsafe.fromJust <$> getInterface registryId
 
   liftIO
@@ -78,23 +103,72 @@ program wallpaperPath = do
   runRequest wl_compositor $ Request_wl_compositor_create_surface wlSurfaceId
   surface' <- Unsafe.fromJust <$> getInterface wlSurfaceId
 
-  modifyIORef env.eventHandlers $ (:) $ EventHandler $ \_ -> \case
-    (Event_zwlr_layer_surface_v1_configure receivedSerial _ _) -> do
-      atomically $ putTMVar serial receivedSerial
-    Event_zwlr_layer_surface_v1_closed -> putStrLn "Output died. TODO: Remake surface on new output"
+  -- wl_output is not bound as its not implemented in saywayland.
 
-  let layerSurfaceActions wlOutput = do
-        layerSurfaceId <- TObjectID <$> newObjectId
-        runRequest zwlr_layer_shell_V1 $ Request_zwlr_layer_shell_v1_get_layer_surface layerSurfaceId wlSurfaceId wlOutput Enum_zwlr_layer_shell_v1_layer_background "wallpaper"
-        zwlrLayerSurface <- Unsafe.fromJust <$> getInterface layerSurfaceId
+  let onEvent :: (WaylandEvent e) => (e -> Wayland Client ()) -> Wayland Client ()
+      onEvent x = modifyIORef env.eventHandlers $ (:) $ EventHandler (const x)
 
-        runRequest zwlrLayerSurface $ Request_zwlr_layer_surface_v1_set_size (fromIntegral bufferWidth) (fromIntegral bufferHeight)
-        runRequest zwlrLayerSurface $ Request_zwlr_layer_surface_v1_set_exclusive_zone $ -1
+  onEvent $ \case
+    Event_wl_registry_global name "wl_output\NUL" _ -> transact $ do
+      modify $ \s -> s{outputNames = Set.insert name s.outputNames}
+      pure pass
+    Event_wl_registry_global_remove name -> transact $ do
+      modify $ \s -> s{outputNames = Set.insert name s.outputNames}
+      pure pass
+    _ -> pass
 
-        runRequest surface' Request_wl_surface_commit
-        atomically (takeTMVar serial) >>= runRequest zwlrLayerSurface . Request_zwlr_layer_surface_v1_ack_configure
+  onEvent $ \case
+    Event_zwlr_layer_surface_v1_configure serial _ _ -> transact $ do
+      gets (.layerPhase) >>= \case
+        AwaitingConfigure surf -> do
+          modify' $ \s -> s{layerPhase = LayerConfigured surf}
+          pure $ runRequest surf (Request_zwlr_layer_surface_v1_ack_configure serial)
+        _ ->
+          pure pass
+    Event_zwlr_layer_surface_v1_closed -> transact $ do
+      oldPhase <- gets (.layerPhase)
+      modify' $ \s -> s{layerPhase = Idle, bufferAttached = False}
+      pure . forM_ (phaseSurface oldPhase) $ \surf ->
+        runRequest surf Request_zwlr_layer_surface_v1_destroy
 
-  layerSurfaceActions 0
+  initialGlobals <- liftIO $ BM.toList <$> readIORef env.globals
+  liftIO $ putStrLn $ "[startup] globals entries seen: " <> show (Relude.length initialGlobals)
+  liftIO $ putStrLn $ "[startup] globals contents: " <> show initialGlobals
+  let initialOutputNames = Set.fromList [name | (interfaceName, name) <- initialGlobals, interfaceName == "wl_output"]
+  liftIO $ putStrLn $ "[startup] initialOutputNames: " <> show (Set.toList initialOutputNames)
+  liftIO . atomically $ modifyTVar' stateVar $ \s -> s{outputNames = s.outputNames <> initialOutputNames}
+
+  let reconcileStep :: Wayland Client ()
+      reconcileStep = do
+        action <- liftIO . atomically $ do
+          s <- readTVar stateVar
+          case (hasAnyOutput s, s.layerPhase, s.pendingBuffer, s.bufferAttached) of
+            (True, Idle, _, _) -> pure createLayerSurface
+            (_, LayerConfigured _, Just buf, False) -> do
+              writeTVar stateVar s{bufferAttached = True}
+              pure (attachBuffer buf)
+            _ -> retry
+        liftIO $ putStrLn "[reconciler] woke up with an action, running it"
+        action
+        where
+          createLayerSurface :: Wayland Client ()
+          createLayerSurface = do
+            layerSurfaceId <- TObjectID <$> newObjectId
+            runRequest zwlr_layer_shell_V1 $ Request_zwlr_layer_shell_v1_get_layer_surface layerSurfaceId wlSurfaceId 0 Enum_zwlr_layer_shell_v1_layer_background "wallpaper"
+            zwlrLayerSurface <- Unsafe.fromJust <$> getInterface layerSurfaceId
+
+            runRequest zwlrLayerSurface $ Request_zwlr_layer_surface_v1_set_size (fromIntegral bufferWidth) (fromIntegral bufferHeight)
+            runRequest zwlrLayerSurface $ Request_zwlr_layer_surface_v1_set_exclusive_zone $ -1
+            runRequest surface' Request_wl_surface_commit
+            liftIO . atomically $ modifyTVar' stateVar $ \s -> s{layerPhase = AwaitingConfigure zwlrLayerSurface}
+
+          attachBuffer :: Wl_buffer -> Wayland Client ()
+          attachBuffer wlBuffer = do
+            runRequest surface' $ Request_wl_surface_attach wlBuffer.wlid 0 0
+            runRequest surface' Request_wl_surface_commit
+
+  liftIO $ putStrLn "[startup] forking reconciler"
+  liftIO . void . forkIO . runReaderT (putStrLn "[reconciler] thread started" >> forever reconcileStep) $ ClientEnv env
 
   let makeSharedMemoryObject = shmOpen poolName (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
       removeSharedMemoryObject _ = shmUnlink poolName
@@ -110,14 +184,13 @@ program wallpaperPath = do
 
           wlBufferId <- TObjectID <$> newObjectId
           runRequest wl_shm_pool $ Request_wl_shm_pool_create_buffer wlBufferId 0 bufferWidth bufferHeight (bufferWidth * colorChannels) colorFormat
+          wlBuffer <- getInterface wlBufferId
+          liftIO . atomically $ modifyTVar' stateVar $ \s -> s{pendingBuffer = wlBuffer}
 
           fileHandle <- liftIO $ fdToHandle fileDescriptor
-
           liftIO $ hPut fileHandle =<< BSL.readFile wallpaperPath
-          runRequest surface' $ Request_wl_surface_attach wlBufferId 0 0
-          runRequest surface' Request_wl_surface_commit
 
           -- Wait for exit
-          takeMVar running
+          liftIO $ takeMVar running
 
   liftIO . void $ bracket makeSharedMemoryObject removeSharedMemoryObject useSharedMemoryObject
