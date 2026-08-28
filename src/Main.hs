@@ -30,22 +30,20 @@ main = do
     getArgs >>= \case
       "-i" : p : _ -> pure p
       _ -> putStrLn "Provide a path to the image as an argument using \"-i <path>\"" >> exitFailure
-  runReaderT (program wallpaperPath) =<< waylandSetup
-  where
-    waylandSetup = do
-      getSocketPath openSocket >>= \case
-        Just path -> do
-          sock <- socket AF_UNIX Stream defaultProtocol
-          connect sock $ SockAddrUnix path
-          counter <- newIORef $ coerce wlDisplayID
-          globals <- newIORef BM.empty
-          objects <- newIORef mempty
-          handlers <- newIORef mempty
-          interfaceTable' <- newIORef $ fromList interfaceTable
-          versionTable' <- newIORef $ fromList versionTable
-          fdqueue <- atomically newTQueue
-          pure $ ClientEnv $ ClientEnvironment sock counter objects globals interfaceTable' versionTable' handlers fdqueue
-        Nothing -> error "couldn't find `$WAYLAND_DISPLAY` nor any open socket."
+  runReaderT (program wallpaperPath) =<< do
+    getSocketPath openSocket >>= \case
+      Just path -> do
+        sock <- socket AF_UNIX Stream defaultProtocol
+        connect sock $ SockAddrUnix path
+        counter <- newIORef $ coerce wlDisplayID
+        globals <- newIORef BM.empty
+        objects <- newIORef mempty
+        handlers <- newIORef mempty
+        interfaceTable' <- newIORef $ fromList interfaceTable
+        versionTable' <- newIORef $ fromList versionTable
+        fdqueue <- atomically newTQueue
+        pure $ ClientEnv $ ClientEnvironment sock counter objects globals interfaceTable' versionTable' handlers fdqueue
+      Nothing -> error "couldn't find `$WAYLAND_DISPLAY` nor any open socket."
 
 program :: FilePath -> Wayland Client ()
 program wallpaperPath = do
