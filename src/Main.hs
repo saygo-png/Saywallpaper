@@ -15,7 +15,7 @@ import Relude hiding (ByteString, get, isPrefixOf, put)
 import Relude.Unsafe qualified as Unsafe
 import Saywayland
 import System.Posix (ownerReadMode, ownerWriteMode, setFdSize, unionFileModes)
-import System.Posix.IO
+import System.Posix.IO hiding (dup)
 import System.Posix.SharedMem
 
 interfaceTable :: InterfaceClientTable
@@ -52,13 +52,14 @@ main = do
       "-i" : p : _ -> pure p
       _ -> putStrLn "Provide a path to the image as an argument using \"-i <path>\"" >> exitFailure
   runReaderT (program wallpaperPath) =<< do
+    let display :: Interface Client = Interface $ Wl_display $ TObjectID wlDisplayID
     getSocketPath openSocket >>= \case
       Just path -> do
         sock <- socket AF_UNIX Stream defaultProtocol
         connect sock $ SockAddrUnix path
         counter <- newIORef $ coerce wlDisplayID
         globals <- newIORef BM.empty
-        objects <- newIORef mempty
+        objects <- newIORef $ fromList [(wlDisplayID, display)]
         handlers <- newIORef mempty
         interfaceTable' <- newIORef $ fromList interfaceTable
         versionTable' <- newIORef $ fromList versionTable
@@ -78,7 +79,8 @@ program wallpaperPath = do
       transact action = join . liftIO . atomically $ stateTVar stateVar (runState action)
 
   registryId <- TObjectID <$> newObjectId
-  runRequest (Wl_display $ TObjectID wlDisplayID) $ Request_wl_display_get_registry registryId
+  display <- Unsafe.fromJust <$> getInterface' @Wl_display 1
+  runRequest display $ Request_wl_display_get_registry registryId
   registry <- Unsafe.fromJust <$> getInterface registryId
 
   liftIO
@@ -113,7 +115,7 @@ program wallpaperPath = do
       modify $ \s -> s{outputNames = Set.insert name s.outputNames}
       pure pass
     Event_wl_registry_global_remove name -> transact $ do
-      modify $ \s -> s{outputNames = Set.insert name s.outputNames}
+      modify $ \s -> s{outputNames = Set.delete name s.outputNames}
       pure pass
     _ -> pass
 
@@ -185,10 +187,11 @@ program wallpaperPath = do
           wlBufferId <- TObjectID <$> newObjectId
           runRequest wl_shm_pool $ Request_wl_shm_pool_create_buffer wlBufferId 0 bufferWidth bufferHeight (bufferWidth * colorChannels) colorFormat
           wlBuffer <- getInterface wlBufferId
-          liftIO . atomically $ modifyTVar' stateVar $ \s -> s{pendingBuffer = wlBuffer}
 
           fileHandle <- liftIO $ fdToHandle fileDescriptor
           liftIO $ hPut fileHandle =<< BSL.readFile wallpaperPath
+
+          liftIO . atomically $ modifyTVar' stateVar $ \s -> s{pendingBuffer = wlBuffer}
 
           -- Wait for exit
           liftIO $ takeMVar running
