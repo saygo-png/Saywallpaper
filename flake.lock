@@ -83,11 +83,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1788087850,
-        "narHash": "sha256-3PsrXouxkQ64EE0qbyI3bT91d1yYIvEgiNpwy8l4Be0=",
+        "lastModified": 1788213613,
+        "narHash": "sha256-WuqIo0aQftLfM7YyHagOcngboSjSGDOYatvUKcNL9KU=",
         "owner": "saygo-png",
         "repo": "saywayland",
-        "rev": "c8e236c0630f0674b69036bc09d06d1aebb56879",
+        "rev": "5f92b451c51ed856c4724a6425ed9a5afa036751",
         "type": "github"
       },
       "original": {

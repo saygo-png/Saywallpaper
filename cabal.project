@@ -3,4 +3,4 @@ packages: .
 source-repository-package
   type: git
   location: https://github.com/saygo-png/saywayland
-  tag: fb50dfbc96ed0fb6def85ceed2314356d5cdeb20
+  tag: 5f92b451c51ed856c4724a6425ed9a5afa036751
