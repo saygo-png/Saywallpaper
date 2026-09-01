@@ -4,6 +4,7 @@ module Main (main) where
 
 import Config
 import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (withMVar)
 import Control.Concurrent.STM (newTQueue, retry, stateTVar)
 import Control.Exception
 import Data.Bimap qualified as BM
@@ -45,6 +46,16 @@ data SurfaceStates = SurfaceStates
 hasAnyOutput :: SurfaceStates -> Bool
 hasAnyOutput = not . Set.null . (.outputNames)
 
+newtype RunRequestS = RunRequestS (forall a. (Interface' a Client) => a -> Request a -> Wayland Client ())
+
+-- Get a function which runs a request with an mvar
+getRunRequestS :: IO RunRequestS
+getRunRequestS = do
+  lock <- newMVar ()
+  pure $ RunRequestS $ \i req -> do
+    clientEnv <- ask
+    liftIO $ withMVar lock $ \_ -> usingReaderT clientEnv (runRequest i req)
+
 main :: IO ()
 main = do
   wallpaperPath <-
@@ -72,6 +83,8 @@ program wallpaperPath = do
   ClientEnv env <- ask
   running <- newEmptyMVar
   stateVar <- liftIO . newTVarIO $ SurfaceStates{outputNames = Set.empty, layerPhase = Idle, pendingBuffer = Nothing, bufferAttached = False}
+
+  RunRequestS runRequestS <- liftIO getRunRequestS
 
   -- Runs an STM transition against the shared state, then performs
   -- whatever side effect that transition decided on.
@@ -156,7 +169,7 @@ program wallpaperPath = do
           createLayerSurface :: Wayland Client ()
           createLayerSurface = do
             layerSurfaceId <- TObjectID <$> newObjectId
-            runRequest zwlr_layer_shell_V1 $ Request_zwlr_layer_shell_v1_get_layer_surface layerSurfaceId wlSurfaceId 0 Enum_zwlr_layer_shell_v1_layer_background "wallpaper"
+            runRequestS zwlr_layer_shell_V1 $ Request_zwlr_layer_shell_v1_get_layer_surface layerSurfaceId wlSurfaceId 0 Enum_zwlr_layer_shell_v1_layer_background "wallpaper"
             zwlrLayerSurface <- Unsafe.fromJust <$> getInterface layerSurfaceId
 
             runRequest zwlrLayerSurface $ Request_zwlr_layer_surface_v1_set_size (fromIntegral bufferWidth) (fromIntegral bufferHeight)
@@ -181,11 +194,11 @@ program wallpaperPath = do
           liftIO . setFdSize fileDescriptor $ fromIntegral poolSize
 
           wlShmPoolId <- TObjectID <$> newObjectId
-          runRequest wl_shm $ Request_wl_shm_create_pool wlShmPoolId fileDescriptor frameSize
+          runRequestS wl_shm $ Request_wl_shm_create_pool wlShmPoolId fileDescriptor frameSize
           wl_shm_pool <- Unsafe.fromJust <$> getInterface wlShmPoolId
 
           wlBufferId <- TObjectID <$> newObjectId
-          runRequest wl_shm_pool $ Request_wl_shm_pool_create_buffer wlBufferId 0 bufferWidth bufferHeight (bufferWidth * colorChannels) colorFormat
+          runRequestS wl_shm_pool $ Request_wl_shm_pool_create_buffer wlBufferId 0 bufferWidth bufferHeight (bufferWidth * colorChannels) colorFormat
           wlBuffer <- getInterface wlBufferId
 
           fileHandle <- liftIO $ fdToHandle fileDescriptor
